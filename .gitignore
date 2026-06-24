@@ -1,0 +1,10 @@
+build/
+build-*/
+*.o
+*.obj
+*.out
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.gguf
