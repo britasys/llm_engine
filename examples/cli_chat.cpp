@@ -42,11 +42,6 @@ int main(int argc, char** argv) {
 
         loader.load();
 
-        std::cout << "metadata_count: " << loader.metadata_count() << std::endl;
-        for (const auto& [k, v] : loader.metadata()) {
-            std::cout << k << " = " << v << '\n';
-        }
-
         std::cout << "Loading model...\n";
 
         Model model(loader);
