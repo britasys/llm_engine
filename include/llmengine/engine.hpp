@@ -1,0 +1,41 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "kv_cache.hpp"
+#include "model.hpp"
+#include "sampler.hpp"
+#include "tokenizer.hpp"
+
+namespace llmengine {
+
+struct GenerationConfig {
+    int32_t max_new_tokens = 128;
+    float temperature = 0.8f;
+    int32_t top_k = 40;
+    float top_p = 0.95f;
+};
+
+class Engine {
+public:
+    Engine(Model& model, Tokenizer& tokenizer, uint32_t seed = 42);
+
+    [[nodiscard]]
+    std::vector<TokenId> generate(const std::vector<TokenId>& prompt,
+                                  const GenerationConfig& config = {});
+
+    [[nodiscard]]
+    std::string generate_text(const std::string& prompt, const GenerationConfig& config = {});
+
+    void reset();
+
+private:
+    Model& model_;
+    Tokenizer& tokenizer_;
+    Sampler sampler_;
+    KVCache kv_cache_;
+};
+
+} // namespace llmengine
