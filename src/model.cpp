@@ -43,7 +43,7 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
 
     c.vocab_size = meta_int(meta, arch + ".vocab_size", 0);
     if (c.vocab_size == 0) {
-        c.vocab_size = meta_int(meta, arch + ".embedding_length", 0);
+        c.vocab_size = meta_int(meta, "tokenizer.ggml.bos_token_id", 0);
     }
 
     c.n_embd = meta_int(meta, arch + ".embedding_length", 0);

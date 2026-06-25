@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
 
         Model model(loader);
 
-        Tokenizer tokenizer;
+        Tokenizer tokenizer(loader);
 
         Engine engine(model, tokenizer);
 
