@@ -140,6 +140,8 @@ private:
      */
     static std::string read_string(std::istream& in);
 
+    static std::string read_array_as_string(std::istream& in);
+
     /**
      * @brief Maps the native GGUF type enumeration token to your engine's internal DType format.
      * * This is vital because GGUF handles highly complex block-quantized formats (like Q4_K_M, Q5_K_S),

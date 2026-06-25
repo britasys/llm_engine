@@ -36,6 +36,76 @@ std::string GGUFLoader::read_string(std::istream& in) {
     return str;
 }
 
+std::string GGUFLoader::read_array_as_string(std::istream& in) {
+    auto elem_type = static_cast<GGUFValueType>(read<uint32_t>(in));
+    uint64_t count = read<uint64_t>(in);
+
+    std::string out = "[";
+    for (uint64_t i = 0; i < count; ++i) {
+        if (i > 0)
+            out += ",";
+
+        switch (elem_type) {
+        case GGUFValueType::UINT8:
+            out += std::to_string(read<uint8_t>(in));
+            break;
+
+        case GGUFValueType::INT8:
+            out += std::to_string(read<int8_t>(in));
+            break;
+
+        case GGUFValueType::UINT16:
+            out += std::to_string(read<uint16_t>(in));
+            break;
+
+        case GGUFValueType::INT16:
+            out += std::to_string(read<int16_t>(in));
+            break;
+
+        case GGUFValueType::UINT32:
+            out += std::to_string(read<uint32_t>(in));
+            break;
+
+        case GGUFValueType::INT32:
+            out += std::to_string(read<int32_t>(in));
+            break;
+
+        case GGUFValueType::UINT64:
+            out += std::to_string(read<uint64_t>(in));
+            break;
+
+        case GGUFValueType::INT64:
+            out += std::to_string(read<int64_t>(in));
+            break;
+
+        case GGUFValueType::FLOAT32:
+            out += std::to_string(read<float>(in));
+            break;
+
+        case GGUFValueType::FLOAT64:
+            out += std::to_string(read<double>(in));
+            break;
+
+        case GGUFValueType::BOOL:
+            out += read<uint8_t>(in) ? "true" : "false";
+            break;
+
+        case GGUFValueType::STRING:
+            out += "\"" + read_string(in) + "\"";
+            break;
+
+        case GGUFValueType::ARRAY:
+            out += read_array_as_string(in);
+            break;
+            
+        default:
+            throw std::runtime_error("Unsupported GGUF array element type");
+        }
+    }
+    out += "]";
+    return out;
+}
+
 DType GGUFLoader::gguf_type_to_dtype(uint32_t type) {
     switch (type) {
     case 0:
@@ -78,7 +148,8 @@ void GGUFLoader::load() {
             break;
 
         case GGUFValueType::ARRAY:
-            metadata_[key] = read<array>(file);
+            metadata_[key] = read_array_as_string(file);
+            break;
 
         case GGUFValueType::UINT8:
             metadata_[key] = std::to_string(read<uint8_t>(file));
