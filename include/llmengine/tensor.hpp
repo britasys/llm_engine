@@ -34,23 +34,45 @@
 //     A runtime dtype tag is what lets one piece of model-loading code
 //     handle "whatever quantization the file uses" uniformly.
 //
-#include <cstdint>
-#include <cstddef>
-#include <vector>
 #include <array>
-#include <string>
+#include <cstddef>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace llmengine {
 
-// Supported element types. Starting with just F32 keeps the first
-// milestone simple; F16 and the quantized K-types are added once the
-// f32 reference path works and we have something to validate against.
 enum class DType : uint8_t {
-    F32,    // 4 bytes/element, IEEE-754 single precision
-    F16,    // 2 bytes/element, IEEE-754 half precision
-    Q8_0,   // 1 byte/element + per-block f32 scale (added in a later milestone)
+    F32,
+    F16,
+
+    Q4_0,
+    Q4_1,
+
+    Q5_0,
+    Q5_1,
+
+    Q8_0,
+    Q8_1,
+
+    Q2_K,
+    Q3_K,
+    Q4_K,
+    Q5_K,
+    Q6_K,
+    Q8_K,
+
+    IQ2_XXS,
+    IQ2_XS,
+    IQ3_XXS,
+    IQ1_S,
+    IQ4_NL,
+    IQ3_S,
+    IQ2_S,
+    IQ4_XS,
+    IQ1_M
 };
 
 // Returns the size in bytes of one *block* for a given dtype, and how many
@@ -112,10 +134,10 @@ public:
     [[nodiscard]] std::string shape_string() const;
 
     ~Tensor();
-    Tensor(const Tensor&) = delete;             // owning copies would be
-    Tensor& operator=(const Tensor&) = delete;  // surprisingly expensive;
-    Tensor(Tensor&&) noexcept;                  // force callers to be
-    Tensor& operator=(Tensor&&) noexcept;       // explicit (use clone()).
+    Tensor(const Tensor&) = delete;            // owning copies would be
+    Tensor& operator=(const Tensor&) = delete; // surprisingly expensive;
+    Tensor(Tensor&&) noexcept;                 // force callers to be
+    Tensor& operator=(Tensor&&) noexcept;      // explicit (use clone()).
 
     [[nodiscard]] Tensor clone() const; // explicit deep copy when you really need one
 

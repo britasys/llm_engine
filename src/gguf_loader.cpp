@@ -97,7 +97,7 @@ std::string GGUFLoader::read_array_as_string(std::istream& in) {
         case GGUFValueType::ARRAY:
             out += read_array_as_string(in);
             break;
-            
+
         default:
             throw std::runtime_error("Unsupported GGUF array element type");
         }
@@ -108,14 +108,78 @@ std::string GGUFLoader::read_array_as_string(std::istream& in) {
 
 DType GGUFLoader::gguf_type_to_dtype(uint32_t type) {
     switch (type) {
+
     case 0:
         return DType::F32;
+
     case 1:
         return DType::F16;
+
+    case 2:
+        return DType::Q4_0;
+
+    case 3:
+        return DType::Q4_1;
+
+    case 6:
+        return DType::Q5_0;
+
+    case 7:
+        return DType::Q5_1;
+
     case 8:
         return DType::Q8_0;
+
+    case 9:
+        return DType::Q8_1;
+
+    case 10:
+        return DType::Q2_K;
+
+    case 11:
+        return DType::Q3_K;
+
+    case 12:
+        return DType::Q4_K;
+
+    case 13:
+        return DType::Q5_K;
+
+    case 14:
+        return DType::Q6_K;
+
+    case 15:
+        return DType::Q8_K;
+
+    case 16:
+        return DType::IQ2_XXS;
+
+    case 17:
+        return DType::IQ2_XS;
+
+    case 18:
+        return DType::IQ3_XXS;
+
+    case 19:
+        return DType::IQ1_S;
+
+    case 20:
+        return DType::IQ4_NL;
+
+    case 21:
+        return DType::IQ3_S;
+
+    case 22:
+        return DType::IQ2_S;
+
+    case 23:
+        return DType::IQ4_XS;
+
+    case 29:
+        return DType::IQ1_M;
+
     default:
-        throw std::runtime_error("Unsupported GGUF tensor type");
+        throw std::runtime_error("Unsupported GGUF tensor type: " + std::to_string(type));
     }
 }
 
@@ -142,7 +206,6 @@ void GGUFLoader::load() {
         const auto type = static_cast<GGUFValueType>(read<uint32_t>(file));
 
         switch (type) {
-
         case GGUFValueType::STRING:
             metadata_[key] = read_string(file);
             break;

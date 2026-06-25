@@ -21,11 +21,56 @@ DTypeInfo dtype_info(DType dt) {
 const char* dtype_name(DType dt) {
     switch (dt) {
     case DType::F32:
-        return "f32";
+        return "F32";
     case DType::F16:
-        return "f16";
+        return "F16";
+
+    case DType::Q4_0:
+        return "Q4_0";
+    case DType::Q4_1:
+        return "Q4_1";
+
+    case DType::Q5_0:
+        return "Q5_0";
+    case DType::Q5_1:
+        return "Q5_1";
+
     case DType::Q8_0:
-        return "q8_0";
+        return "Q8_0";
+    case DType::Q8_1:
+        return "Q8_1";
+
+    case DType::Q2_K:
+        return "Q2_K";
+    case DType::Q3_K:
+        return "Q3_K";
+    case DType::Q4_K:
+        return "Q4_K";
+    case DType::Q5_K:
+        return "Q5_K";
+    case DType::Q6_K:
+        return "Q6_K";
+    case DType::Q8_K:
+        return "Q8_K";
+
+    case DType::IQ2_XXS:
+        return "IQ2_XXS";
+    case DType::IQ2_XS:
+        return "IQ2_XS";
+    case DType::IQ3_XXS:
+        return "IQ3_XXS";
+    case DType::IQ1_S:
+        return "IQ1_S";
+    case DType::IQ4_NL:
+        return "IQ4_NL";
+    case DType::IQ3_S:
+        return "IQ3_S";
+    case DType::IQ2_S:
+        return "IQ2_S";
+    case DType::IQ4_XS:
+        return "IQ4_XS";
+    case DType::IQ1_M:
+        return "IQ1_M";
     }
     return "unknown";
 }
