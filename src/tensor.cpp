@@ -8,14 +8,68 @@ namespace llmengine {
 
 DTypeInfo dtype_info(DType dt) {
     switch (dt) {
+
     case DType::F32:
         return {4, 1};
     case DType::F16:
         return {2, 1};
+
+    case DType::Q4_0:
+        // ggml_type_q4_0
+        // 2-byte fp16 scale + 16 packed bytes
+        return {18, 32};
+    case DType::Q4_1:
+        // fp16 scale + fp16 min + 16 packed bytes
+        return {20, 32};
+
+    case DType::Q5_0:
+        // fp16 scale + 4-byte high bits + 16 packed bytes
+        return {22, 32};
+    case DType::Q5_1:
+        // fp16 scale + fp16 min + 4-byte high bits + 16 packed bytes
+        return {24, 32};
+
     case DType::Q8_0:
-        return {32 + 4, 32};
+        // fp32 scale + 32 int8 values
+        return {36, 32};
+    case DType::Q8_1:
+        // fp32 scale + fp32 sum + 32 int8 values
+        return {40, 32};
+
+    case DType::Q2_K:
+        return {84, 256};        
+    case DType::Q3_K:
+        return {110, 256};
+    case DType::Q4_K:
+        return {144, 256};
+    case DType::Q5_K:
+        return {176, 256};
+    case DType::Q6_K:
+        return {210, 256};
+    case DType::Q8_K:
+        return {292, 256};
+
+    case DType::IQ2_XXS:
+        return {66, 256};
+    case DType::IQ2_XS:
+        return {74, 256};
+    case DType::IQ3_XXS:
+        return {98, 256};
+    case DType::IQ1_S:
+        return {50, 256};
+    case DType::IQ4_NL:
+        return {144, 256};
+    case DType::IQ3_S:
+        return {110, 256};
+    case DType::IQ2_S:
+        return {82, 256};
+    case DType::IQ4_XS:
+        return {136, 256};
+    case DType::IQ1_M:
+        return {56, 256};
     }
-    throw std::runtime_error("unknown DType");
+
+    throw std::runtime_error("unknown DType: " + std::to_string(static_cast<int>(dt)));
 }
 
 const char* dtype_name(DType dt) {
