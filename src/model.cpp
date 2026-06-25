@@ -42,6 +42,10 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
     std::string arch = (arch_it != meta.end()) ? arch_it->second : "llama";
 
     c.vocab_size = meta_int(meta, arch + ".vocab_size", 0);
+    if (c.vocab_size == 0) {
+        c.vocab_size = meta_int(meta, arch + ".embedding_length", 0);
+    }
+
     c.n_embd = meta_int(meta, arch + ".embedding_length", 0);
     c.n_layers = meta_int(meta, arch + ".block_count", 0);
     c.n_heads = meta_int(meta, arch + ".attention.head_count", 0);
