@@ -6,6 +6,43 @@
 
 namespace llmengine {
 
+namespace {
+
+// Parses one array element starting at `pos` in a string produced by
+// read_array_as_string() (format: [elem,elem,...] where string elements
+// are wrapped in double quotes). Returns the unquoted piece text and
+// advances `pos` past the trailing comma or closing bracket.
+std::string parse_next_element(const std::string& s, std::size_t& pos) {
+    if (pos >= s.size())
+        return "";
+
+    if (s[pos] == '"') {
+        // Quoted string element: scan to the matching closing quote.
+        std::size_t start = pos + 1;
+        std::size_t end = s.find('"', start);
+        if (end == std::string::npos) {
+            throw std::runtime_error("malformed tokenizer.ggml.tokens: unterminated quoted string");
+        }
+        std::string piece = s.substr(start, end - start);
+        pos = end + 1; // skip closing quote
+        // skip trailing ',' or ']'
+        if (pos < s.size() && (s[pos] == ',' || s[pos] == ']'))
+            ++pos;
+        return piece;
+    }
+
+    // Unquoted (numeric/bool) element -- shouldn't occur for a token
+    // array, but handled defensively rather than assuming.
+    std::size_t end = s.find_first_of(",]", pos);
+    if (end == std::string::npos)
+        end = s.size();
+    std::string piece = s.substr(pos, end - pos);
+    pos = (end < s.size() && s[end] == ',') ? end + 1 : end + 1;
+    return piece;
+}
+
+} // namespace
+
 Tokenizer::Tokenizer(const GGUFLoader& loader) {
     auto it = loader.metadata().find("tokenizer.ggml.tokens");
 
@@ -13,23 +50,17 @@ Tokenizer::Tokenizer(const GGUFLoader& loader) {
         throw std::runtime_error("GGUF missing tokenizer.ggml.tokens");
     }
 
-    const std::string& tokens = it->second;
+    const std::string& raw = it->second;
+    if (raw.size() < 2 || raw.front() != '[' || raw.back() != ']') {
+        throw std::runtime_error("tokenizer.ggml.tokens is not in the expected array format");
+    }
 
-    std::size_t pos = 0;
+    std::size_t pos = 1; // skip leading '['
     TokenId id = 0;
 
-    while (pos < tokens.size()) {
-        auto next = tokens.find(',', pos);
-
-        std::string piece =
-            tokens.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
-
-        add_token(id++, piece);
-
-        if (next == std::string::npos)
-            break;
-
-        pos = next + 1;
+    while (pos < raw.size() && raw[pos] != ']') {
+        std::string piece = parse_next_element(raw, pos);
+        add_token(id++, std::move(piece));
     }
 }
 

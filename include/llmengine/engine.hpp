@@ -16,6 +16,7 @@ struct GenerationConfig {
     float temperature = 0.8f;
     int32_t top_k = 40;
     float top_p = 0.95f;
+    TokenId eos_token = -1; // -1 disables early stopping
 };
 
 class Engine {
@@ -36,6 +37,9 @@ private:
     Tokenizer& tokenizer_;
     Sampler sampler_;
     KVCache kv_cache_;
+
+    [[nodiscard]]
+    TokenId pick_next_token(const Tensor& logits, const GenerationConfig& config);
 };
 
 } // namespace llmengine
