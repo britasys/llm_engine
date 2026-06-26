@@ -21,6 +21,29 @@ option(LLMENGINE_BUILD_EXAMPLES "Build example binaries (CLI chat, etc.)" ON)
 option(LLMENGINE_ENABLE_SANITIZERS "Build with ASan+UBSan (debug aid, not for release)" OFF)
 option(LLMENGINE_NATIVE_ARCH "Compile with -march=native for max local performance" OFF)
 
+include(FetchContent)
+
+# ---------------------------------------------------------------------------
+# LibTorch
+# ---------------------------------------------------------------------------
+
+set(LIBTORCH_VERSION "2.7.1")
+FetchContent_Declare(
+    libtorch
+    URL https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip
+)
+FetchContent_GetProperties(libtorch)
+
+if(NOT libtorch_POPULATED)
+    FetchContent_Populate(libtorch)
+endif()
+
+set(Torch_DIR
+    ${libtorch_SOURCE_DIR}/share/cmake/Torch
+)
+
+find_package(Torch REQUIRED)
+
 # ---------------------------------------------------------------------------
 # The core library
 # ---------------------------------------------------------------------------
