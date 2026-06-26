@@ -542,7 +542,6 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
     return c;
 }
 
-
 Tensor linear(const Tensor& x, const Tensor& w) {
     int64_t in_features = x.dim(1);
 
@@ -568,27 +567,12 @@ Tensor linear(const Tensor& x, const Tensor& w) {
                              std::to_string(in_features));
 }
 
-void apply_rope(std::span<float> v, int64_t pos, float theta_base) {
-    const std::size_t dim = v.size();
-    for (std::size_t i = 0; i < dim / 2; ++i) {
-        float exponent = static_cast<float>(2 * i) / static_cast<float>(dim);
-        float theta_i = std::pow(theta_base, -exponent);
-        float angle = static_cast<float>(pos) * theta_i;
-        float cos_a = std::cos(angle);
-        float sin_a = std::sin(angle);
-        float v0 = v[2 * i];
-        float v1 = v[2 * i + 1];
-        v[2 * i] = v0 * cos_a - v1 * sin_a;
-        v[2 * i + 1] = v0 * sin_a + v1 * cos_a;
-    }
-}
-
-
 Model::Model(GGUFLoader& loader) {
     config_ = ModelConfig::from_metadata(loader.metadata());
 
     token_embd_ = load_f32(loader, "token_embd.weight");
     output_norm_ = load_f32(loader, "output_norm.weight");
+    rope_cache_.initialize(config_.max_seq_len, config_.head_dim(), config_.rope_theta);
     output_weight_ = loader.has_tensor("output.weight") ? load_f32(loader, "output.weight")
                                                         : load_f32(loader, "token_embd.weight");
 
@@ -627,12 +611,12 @@ Tensor Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
     for (int64_t h = 0; h < n_heads; ++h) {
         apply_rope(q_span.subspan(static_cast<std::size_t>(h * head_dim),
                                   static_cast<std::size_t>(head_dim)),
-                   pos, config_.rope_theta);
+                   pos, rope_cache_);
     }
     for (int64_t h = 0; h < n_kv_heads; ++h) {
         apply_rope(k_span.subspan(static_cast<std::size_t>(h * head_dim),
                                   static_cast<std::size_t>(head_dim)),
-                   pos, config_.rope_theta);
+                   pos, rope_cache_);
     }
 
     Tensor k_view = Tensor::view(k.data(), {n_kv_heads, head_dim}, DType::F32);

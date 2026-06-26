@@ -10,6 +10,7 @@
 #include "kv_cache.hpp"
 #include "tensor.hpp"
 #include "tokenizer.hpp"
+#include "rope_cache.hpp"
 
 namespace llmengine {
 
@@ -51,6 +52,8 @@ public:
 
 private:
     ModelConfig config_;
+
+    RopeCache rope_cache_;
 
     Tensor token_embd_;
     Tensor output_norm_;

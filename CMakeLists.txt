@@ -33,6 +33,7 @@ add_library(llmengine
     src/sampler.cpp
     src/model.cpp
     src/engine.cpp
+    src/rope_cache.cpp
 )
 
 target_include_directories(llmengine PUBLIC
