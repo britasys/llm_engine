@@ -10,9 +10,6 @@ namespace llmengine {
 
 namespace {
 
-// IEEE-754 half -> float. ggml's f16 scale fields need this; if your
-// project already has an f16->f32 helper elsewhere (it should, for
-// dequantizing DType::F16 tensors), use that one instead of duplicating it.
 float f16_to_f32(uint16_t h) {
     uint32_t sign = (h & 0x8000u) << 16;
     uint32_t exp = (h >> 10) & 0x1F;
@@ -40,12 +37,6 @@ float f16_to_f32(uint16_t h) {
     std::memcpy(&f, &bits, sizeof(f));
     return f;
 }
-
-namespace {
-
-// --- Linear quants (legacy, "_0"/"_1" suffix): fixed-size blocks, single
-// scale (+ optional bias for "_1" variants), no per-sub-block scale table.
-// ---------------------------------------------------------------------------
 
 Tensor dequantize_q4_0_to_f32(const Tensor& t) {
     constexpr int64_t kBlockElems = 32;
@@ -130,12 +121,6 @@ Tensor dequantize_q5_1_to_f32(const Tensor& t) {
     }
     return out;
 }
-
-// --- K-quants: 256-element super-blocks, multiple 16/32-element
-// sub-blocks each with their own packed scale (and sometimes min),
-// derived from a per-superblock f16 scale (+dmin). Layouts below mirror
-// ggml's reference block_q*_K structs/dequantize_row_q*_K exactly.
-// ---------------------------------------------------------------------------
 
 Tensor dequantize_q2_k_to_f32(const Tensor& t) {
     constexpr int64_t kBlockElems = 256;
@@ -240,8 +225,6 @@ Tensor dequantize_q3_k_to_f32(const Tensor& t) {
     return out;
 }
 
-// Shared by Q4_K and Q5_K: unpacks one (scale, min) 6-bit pair out of
-// their common 12-byte packed scale array (ggml's get_scale_min_k4).
 void get_scale_min_k4(int j, const uint8_t* q, uint8_t& d, uint8_t& m) {
     if (j < 4) {
         d = q[j] & 63;
@@ -352,8 +335,6 @@ Tensor dequantize_q8_k_to_f32(const Tensor& t) {
     }
     return out;
 }
-
-} // namespace
 
 Tensor dequantize_q6_k_to_f32(const Tensor& t) {
     constexpr int64_t kBlockElems = 256;
@@ -506,10 +487,6 @@ Tensor load_f32(GGUFLoader& loader, const std::string& name) {
     }
 }
 
-} // namespace
-
-namespace {
-
 int64_t meta_int(const std::unordered_map<std::string, std::string>& meta, const std::string& key,
                  int64_t fallback) {
     auto it = meta.find(key);
@@ -565,7 +542,6 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
     return c;
 }
 
-namespace {
 
 Tensor linear(const Tensor& x, const Tensor& w) {
     int64_t in_features = x.dim(1);
@@ -607,7 +583,6 @@ void apply_rope(std::span<float> v, int64_t pos, float theta_base) {
     }
 }
 
-} // namespace
 
 Model::Model(GGUFLoader& loader) {
     config_ = ModelConfig::from_metadata(loader.metadata());
