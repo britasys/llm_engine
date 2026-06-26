@@ -4,18 +4,18 @@
 
 namespace llmengine::ops {
 
-Tensor matmul(const Tensor& a, const Tensor& b);
+void matmul(const Tensor& a, const Tensor& b, Tensor& out);
 
-Tensor add(const Tensor& a, const Tensor& b);
+void add(const Tensor& a, const Tensor& b, Tensor& out);
 
-Tensor add_inplace(Tensor x, const Tensor& y);
+void add_inplace(Tensor x, const Tensor& y, Tensor& out);
 
-Tensor rms_norm(const Tensor& x, const Tensor& weight, float eps = 1e-5f);
+void rms_norm(const Tensor& x, const Tensor& weight, float eps = 1e-5f, Tensor& out);
 
-Tensor silu(const Tensor& x);
+void silu(const Tensor& x, Tensor& out);
 
-Tensor softmax(const Tensor& x);
+void softmax(const Tensor& x, Tensor& out);
 
-Tensor transpose(const Tensor& x);
+void transpose(const Tensor& x, Tensor& out);
 
 } // namespace llmengine::ops
