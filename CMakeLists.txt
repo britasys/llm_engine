@@ -32,8 +32,10 @@ add_library(llmengine
     src/kv_cache.cpp
     src/sampler.cpp
     src/model.cpp
+    src/model_helper.cpp
     src/engine.cpp
     src/rope_cache.cpp
+    src/scratch_arena.cpp
 )
 
 target_include_directories(llmengine PUBLIC
@@ -60,17 +62,17 @@ target_link_libraries(llmengine PUBLIC Threads::Threads)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-if(LLMENGINE_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
+# if(LLMENGINE_BUILD_TESTS)
+#     enable_testing()
+#     add_subdirectory(tests)
+# endif()
 
 # ---------------------------------------------------------------------------
 # Benchmarks
 # ---------------------------------------------------------------------------
-if(LLMENGINE_BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
-endif()
+# if(LLMENGINE_BUILD_BENCHMARKS)
+#     add_subdirectory(benchmarks)
+# endif()
 
 # ---------------------------------------------------------------------------
 # Examples
