@@ -64,7 +64,7 @@ void add_inplace(Tensor& x, const Tensor& y) {
         X[i] += Y[i];
 }
 
-void rms_norm(const Tensor& x, const Tensor& weight, float eps, Tensor& out) {
+void rms_norm(const Tensor& x, const Tensor& weight, Tensor& out, float eps) {
     if (x.ndim() != 2)
         throw std::runtime_error("rms_norm expects 2D tensor");
 
@@ -102,6 +102,16 @@ void silu_inplace(Tensor& x) {
 
     for (int64_t i = 0; i < x.numel(); ++i)
         X[i] = X[i] / (1.f + std::exp(-X[i]));
+}
+
+void silu(const Tensor& x, Tensor& out) {    
+    auto src = x.as_f32();
+    auto dst = out.as_f32();
+
+    for (int64_t i = 0; i < x.numel(); ++i) {
+        float val = src[i];
+        dst[i] = val / (1.0f + std::exp(-val));
+    }
 }
 
 void softmax(const Tensor& x, Tensor& out) {

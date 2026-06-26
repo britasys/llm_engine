@@ -8,9 +8,10 @@
 
 #include "gguf_loader.hpp"
 #include "kv_cache.hpp"
+#include "rope_cache.hpp"
 #include "tensor.hpp"
 #include "tokenizer.hpp"
-#include "rope_cache.hpp"
+#include "scratch_arena.hpp"
 
 namespace llmengine {
 
@@ -55,6 +56,8 @@ private:
 
     RopeCache rope_cache_;
 
+    ScratchArena scratch_arena_;
+
     Tensor token_embd_;
     Tensor output_norm_;
     Tensor output_weight_;
@@ -63,8 +66,8 @@ private:
 
     [[nodiscard]] Tensor forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos,
                                        KVCache& kv_cache) const;
-    [[nodiscard]] Tensor attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
-                                   KVCache& kv_cache) const;
+    void attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
+                                   KVCache& kv_cache, Tensor& out) const;
     [[nodiscard]] Tensor feed_forward(int64_t layer_idx, const Tensor& x_norm) const;
 };
 

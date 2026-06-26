@@ -19,7 +19,6 @@ float f16_to_f32(uint16_t h) {
         if (mant == 0) {
             bits = sign;
         } else {
-            // subnormal half -> normalized float
             exp = 1;
             while (!(mant & 0x400u)) {
                 mant <<= 1;
@@ -510,6 +509,18 @@ float meta_float(const std::unordered_map<std::string, std::string>& meta, const
     }
 }
 
+std::size_t calculate_arena_size(const ModelConfig& config) {
+    std::size_t attn_mem = (2 * config.n_embd) + (2 * config.n_kv_heads * config.head_dim());
+    attn_mem *= sizeof(float);
+
+    std::size_t ffn_mem = 3 * config.n_ff * sizeof(float);
+    std::size_t peak_bytes = std::max(attn_mem, ffn_mem);
+    std::size_t raw_estimate = peak_bytes * 8;
+    constexpr std::size_t kMinFloor = 4 * 1024 * 1024; // 4 MB
+
+    return std::max(raw_estimate, kMinFloor);
+}
+
 } // namespace
 
 ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std::string>& meta) {
@@ -542,40 +553,43 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
     return c;
 }
 
-Tensor linear(const Tensor& x, const Tensor& w) {
+void linear(const Tensor& x, const Tensor& w, Tensor& out) {
     int64_t in_features = x.dim(1);
 
     if (w.dim(1) == in_features) {
         int64_t out_features = w.dim(0);
-        Tensor out = Tensor::zeros({1, out_features});
+
         auto x_span = x.as_f32();
-        auto out_span = out.as_f32();
+        auto out_span = out.as_f32(); // Write directly into the destination
+
         for (int64_t o = 0; o < out_features; ++o) {
             auto wrow = w.row(o);
             float acc = 0.0f;
-            for (int64_t i = 0; i < in_features; ++i)
+            for (int64_t i = 0; i < in_features; ++i) {
                 acc += x_span[i] * wrow[i];
+            }
             out_span[o] = acc;
         }
-        return out;
+        return;
     }
+
     if (w.dim(0) == in_features) {
-        return ops::matmul(x, w);
+        return ops::matmul(x, w, out);
     }
+
     throw std::runtime_error("linear: weight shape " + w.shape_string() +
                              " incompatible with input feature count " +
                              std::to_string(in_features));
 }
 
-Model::Model(GGUFLoader& loader) {
-    config_ = ModelConfig::from_metadata(loader.metadata());
-
+Model::Model(GGUFLoader& loader)
+    : config_{ModelConfig::from_metadata(loader.metadata())},
+      scratch_arena_{calculate_arena_size(config_)} {
     token_embd_ = load_f32(loader, "token_embd.weight");
     output_norm_ = load_f32(loader, "output_norm.weight");
     rope_cache_.initialize(config_.max_seq_len, config_.head_dim(), config_.rope_theta);
     output_weight_ = loader.has_tensor("output.weight") ? load_f32(loader, "output.weight")
                                                         : load_f32(loader, "token_embd.weight");
-
     layers_.reserve(static_cast<std::size_t>(config_.n_layers));
     for (int64_t i = 0; i < config_.n_layers; ++i) {
         std::string p = "blk." + std::to_string(i) + ".";
@@ -593,17 +607,32 @@ Model::Model(GGUFLoader& loader) {
     }
 }
 
-Tensor Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
-                        KVCache& kv_cache) const {
+void Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos, KVCache& kv_cache,
+                      Tensor& out) const {
     const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
     const int64_t head_dim = config_.head_dim();
     const int64_t n_heads = config_.n_heads;
     const int64_t n_kv_heads = config_.n_kv_heads;
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-    Tensor q = linear(x_norm, lw.wq);
-    Tensor k = linear(x_norm, lw.wk);
-    Tensor v = linear(x_norm, lw.wv);
+    // FIX: Dynamically read out_features from the weight tensors themselves
+    // instead of multiplying config parameters.
+    int64_t q_out_features = (lw.wq.dim(0) == x_norm.dim(1)) ? lw.wq.dim(1) : lw.wq.dim(0);
+    int64_t k_out_features = (lw.wk.dim(0) == x_norm.dim(1)) ? lw.wk.dim(1) : lw.wk.dim(0);
+    int64_t v_out_features = (lw.wv.dim(0) == x_norm.dim(1)) ? lw.wv.dim(1) : lw.wv.dim(0);
+
+    int64_t q_shape[] = {1, q_out_features};
+    int64_t k_shape[] = {1, k_out_features};
+    int64_t v_shape[] = {1, v_out_features};
+
+    Tensor q, k, v;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(q, q_shape, DType::F32);
+    const_cast<ScratchArena&>(scratch_arena_).alloc(k, k_shape, DType::F32);
+    const_cast<ScratchArena&>(scratch_arena_).alloc(v, v_shape, DType::F32);
+
+    linear(x_norm, lw.wq, q);
+    linear(x_norm, lw.wk, k);
+    linear(x_norm, lw.wv, v);
 
     auto q_span = q.as_f32();
     auto k_span = k.as_f32();
@@ -629,10 +658,11 @@ Tensor Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
 
     auto ck_span = cached_keys.as_f32();
     auto cv_span = cached_values.as_f32();
-
     const int64_t group_size = n_heads / n_kv_heads;
 
-    Tensor attn_out = Tensor::zeros({1, n_heads * head_dim});
+    Tensor attn_out;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(attn_out, q_shape, DType::F32);
+    std::fill_n(attn_out.as_f32().data(), attn_out.numel(), 0.0f);
     auto out_span = attn_out.as_f32();
 
     std::vector<float> scores(static_cast<std::size_t>(seq_len));
@@ -677,33 +707,65 @@ Tensor Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos,
         }
     }
 
-    return linear(attn_out, lw.wo);
+    linear(attn_out, lw.wo, out);
 }
 
 Tensor Model::feed_forward(int64_t layer_idx, const Tensor& x_norm) const {
     const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
-    Tensor gate = ops::silu(linear(x_norm, lw.w_gate));
-    Tensor up = linear(x_norm, lw.w_up);
+
+    Tensor gate_linear, up;
+    int64_t ff_shape[] = {1, config_.n_ff};
+    const_cast<ScratchArena&>(scratch_arena_).alloc(gate_linear, ff_shape, DType::F32);
+    const_cast<ScratchArena&>(scratch_arena_).alloc(up, ff_shape, DType::F32);
+
+    linear(x_norm, lw.w_gate, gate_linear);
+    linear(x_norm, lw.w_up, up);
+
+    Tensor gate;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(gate, ff_shape, DType::F32);
+    ops::silu(gate_linear, gate);
 
     auto gate_span = gate.as_f32();
     auto up_span = up.as_f32();
     for (std::size_t i = 0; i < gate_span.size(); ++i)
         gate_span[i] *= up_span[i];
 
-    return linear(gate, lw.w_down);
+    Tensor out;
+    int64_t out_shape[] = {1, config_.n_embd};
+    const_cast<ScratchArena&>(scratch_arena_).alloc(out, out_shape, DType::F32);
+    linear(gate, lw.w_down, out);
+    return out;
 }
 
 Tensor Model::forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos,
                             KVCache& kv_cache) const {
     const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
 
-    Tensor attn_in = ops::rms_norm(x, lw.attn_norm, config_.rms_eps);
-    Tensor attn_out = attention(layer_idx, attn_in, pos, kv_cache);
-    Tensor x1 = ops::add(x, attn_out);
+    const_cast<ScratchArena&>(scratch_arena_).reset();
 
-    Tensor ffn_in = ops::rms_norm(x1, lw.ffn_norm, config_.rms_eps);
+    int64_t layer_shape[] = {1, config_.n_embd}; // [1, 896]
+
+    Tensor attn_in;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(attn_in, layer_shape, DType::F32);
+    ops::rms_norm(x, lw.attn_norm, attn_in, config_.rms_eps);
+    
+    Tensor attn_out;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(attn_out, layer_shape, DType::F32);
+    attention(layer_idx, attn_in, pos, kv_cache, attn_out);
+    
+    Tensor x1;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(x1, layer_shape, DType::F32);
+    ops::add(x, attn_out, x1);
+    
+    Tensor ffn_in;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(ffn_in, layer_shape, DType::F32);
+    ops::rms_norm(x1, lw.ffn_norm, ffn_in, config_.rms_eps);
+    
     Tensor ffn_out = feed_forward(layer_idx, ffn_in);
-    Tensor x2 = ops::add(x1, ffn_out);
+    
+    Tensor x2;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(x2, layer_shape, DType::F32);
+    ops::add(x1, ffn_out, x2);
 
     return x2;
 }
@@ -725,8 +787,17 @@ Tensor Model::forward(TokenId token, int64_t pos, KVCache& kv_cache) const {
         x = forward_layer(l, x, pos, kv_cache);
     }
 
-    Tensor x_norm = ops::rms_norm(x, output_norm_, config_.rms_eps);
-    Tensor logits = linear(x_norm, output_weight_);
+    Tensor x_norm;
+    int64_t final_shape[] = {1, config_.n_embd};
+    const_cast<ScratchArena&>(scratch_arena_).alloc(x_norm, final_shape, DType::F32);
+    ops::rms_norm(x, output_norm_, x_norm, config_.rms_eps);
+    
+    x_norm = Tensor::view(x_norm.data(), {1, config_.n_embd}, DType::F32);    
+    int64_t logits_shape[] = {1, config_.vocab_size};
+    Tensor logits;
+    const_cast<ScratchArena&>(scratch_arena_).alloc(logits, logits_shape, DType::F32);    
+    linear(x_norm, output_weight_, logits);
+
     return logits;
 }
 
