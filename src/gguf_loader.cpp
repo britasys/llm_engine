@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace llmengine {
@@ -282,13 +283,26 @@ void GGUFLoader::load() {
         tensors_.emplace(info.name, std::move(info));
     }
 
+    // 1. Calculate the proper alignment offset right where the stream leaves off
+    uint64_t alignment = 32;
+    auto it = metadata_.find("general.alignment");
+    if (it != metadata_.end()) {
+        alignment = std::stoull(it->second);
+    }
+
+    uint64_t pos = static_cast<uint64_t>(file.tellg());
+    tensor_data_offset_ = (pos + alignment - 1) & ~(alignment - 1);
+
     file.seekg(0, std::ios::end);
-    const auto size = static_cast<size_t>(file.tellg());
-    file.seekg(0);
 
-    file_data_.resize(size);
+    const auto size = file.tellg();
 
-    file.read(reinterpret_cast<char*>(file_data_.data()), static_cast<std::streamsize>(size));
+    file_data_.resize(static_cast<size_t>(size));
+
+    file.seekg(0, std::ios::beg);
+
+    file.read(reinterpret_cast<char*>(file_data_.data()),
+              static_cast<std::streamsize>(file_data_.size()));
 
     if (!file) {
         throw std::runtime_error("Failed reading GGUF file");
@@ -315,12 +329,16 @@ const GGUFTensorInfo& GGUFLoader::tensor_info(const std::string& name) const {
     return tensors_.at(name);
 }
 
+const std::unordered_map<std::string, GGUFTensorInfo>& GGUFLoader::tensors() const noexcept {
+    return tensors_;
+}
+
 Tensor GGUFLoader::tensor(const std::string& name) {
     const auto& info = tensors_.at(name);
 
-    auto* ptr = file_data_.data() + info.offset;
+    uint8_t* ptr = file_data_.data() + tensor_data_offset_ + info.offset;
 
-    return Tensor::view(ptr, info.shape, info.dtype);
+    return Tensor::view(const_cast<uint8_t*>(ptr), info.shape, info.dtype);
 }
 
 const std::unordered_map<std::string, std::string>& GGUFLoader::metadata() const noexcept {

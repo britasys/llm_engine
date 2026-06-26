@@ -14,7 +14,12 @@ public:
 
     void reset() noexcept;
 
-    void alloc(Tensor& tensor, std::span<const int64_t> shape, DType dtype);
+    void alloc(Tensor& tensor, std::span<const int64_t> shape, DType dtype = DType::F32);
+
+    [[nodiscard]]
+    std::size_t mark() const noexcept;
+
+    void rewind(std::size_t mark) noexcept;
 
     [[nodiscard]]
     std::size_t capacity() const noexcept {
@@ -26,11 +31,6 @@ public:
         return offset_;
     }
 
-    [[nodiscard]]
-    std::size_t available() const noexcept {
-        return buffer_.size() - offset_;
-    }
-
 private:
     static constexpr std::size_t kAlignment = 64;
 
@@ -38,6 +38,20 @@ private:
 
     std::vector<std::byte> buffer_;
     std::size_t offset_ = 0;
+};
+
+class ScratchScope {
+public:
+    explicit ScratchScope(ScratchArena& arena) noexcept : arena_(arena), mark_(arena.mark()) {}
+
+    ScratchScope(const ScratchScope&) = delete;
+    ScratchScope& operator=(const ScratchScope&) = delete;
+
+    ~ScratchScope() { arena_.rewind(mark_); }
+
+private:
+    ScratchArena& arena_;
+    std::size_t mark_;
 };
 
 } // namespace llmengine

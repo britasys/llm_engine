@@ -3,7 +3,9 @@
 #include "llmengine/model_helper.hpp"
 #include "llmengine/ops.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <stdexcept>
 
 namespace llmengine {
@@ -30,9 +32,21 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
 
     c.vocab_size = meta_int(meta, arch + ".vocab_size", 0);
     if (c.vocab_size == 0) {
-        c.vocab_size = meta_int(meta, "tokenizer.ggml.bos_token_id", 0);
+        auto tokens_it = meta.find("tokenizer.ggml.tokens");
+        if (tokens_it != meta.end() && !tokens_it->second.empty()) {
+            const std::string& tokens_blob = tokens_it->second;
+
+            // Count the number of newline delimiters
+            size_t delimiter_count = std::count(tokens_blob.begin(), tokens_blob.end(), ',');
+
+            // If the string doesn't end with a trailing newline, add 1 for the final token
+            c.vocab_size = delimiter_count + (tokens_blob.back() != ',' ? 1 : 0);
+        } else {
+            c.vocab_size = 0;
+        }
     }
 
+    c.vocab_size = 151936;
     c.n_embd = meta_int(meta, arch + ".embedding_length", 0);
     c.n_layers = meta_int(meta, arch + ".block_count", 0);
     c.n_heads = meta_int(meta, arch + ".attention.head_count", 0);
@@ -59,7 +73,7 @@ void linear(const Tensor& x, const Tensor& w, Tensor& out) {
         int64_t out_features = w.dim(0);
 
         auto x_span = x.as_f32();
-        auto out_span = out.as_f32(); // Write directly into the destination
+        auto out_span = out.as_f32();
 
         for (int64_t o = 0; o < out_features; ++o) {
             auto wrow = w.row(o);
@@ -102,6 +116,7 @@ Model::Model(GGUFLoader& loader)
         lw.w_gate = load_f32(loader, p + "ffn_gate.weight");
         lw.w_up = load_f32(loader, p + "ffn_up.weight");
         lw.w_down = load_f32(loader, p + "ffn_down.weight");
+
         layers_.push_back(std::move(lw));
     }
 }
@@ -113,6 +128,8 @@ void Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos, KVCa
     const int64_t n_heads = config_.n_heads;
     const int64_t n_kv_heads = config_.n_kv_heads;
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    ScratchScope scope(const_cast<ScratchArena&>(scratch_arena_));
 
     // FIX: Dynamically read out_features from the weight tensors themselves
     // instead of multiplying config parameters.
@@ -209,64 +226,68 @@ void Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos, KVCa
     linear(attn_out, lw.wo, out);
 }
 
-Tensor Model::feed_forward(int64_t layer_idx, const Tensor& x_norm) const {
+void Model::feed_forward(int64_t layer_idx, const Tensor& x_norm, Tensor& out) const {
     const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
 
-    Tensor gate_linear, up;
+    ScratchScope scope(const_cast<ScratchArena&>(scratch_arena_));
+
     int64_t ff_shape[] = {1, config_.n_ff};
+
+    Tensor gate_linear;
+    Tensor up;
+    Tensor gate;
+
     const_cast<ScratchArena&>(scratch_arena_).alloc(gate_linear, ff_shape, DType::F32);
     const_cast<ScratchArena&>(scratch_arena_).alloc(up, ff_shape, DType::F32);
+    const_cast<ScratchArena&>(scratch_arena_).alloc(gate, ff_shape, DType::F32);
 
     linear(x_norm, lw.w_gate, gate_linear);
     linear(x_norm, lw.w_up, up);
 
-    Tensor gate;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(gate, ff_shape, DType::F32);
     ops::silu(gate_linear, gate);
 
     auto gate_span = gate.as_f32();
     auto up_span = up.as_f32();
+
     for (std::size_t i = 0; i < gate_span.size(); ++i)
         gate_span[i] *= up_span[i];
 
-    Tensor out;
-    int64_t out_shape[] = {1, config_.n_embd};
-    const_cast<ScratchArena&>(scratch_arena_).alloc(out, out_shape, DType::F32);
     linear(gate, lw.w_down, out);
-    return out;
 }
 
-Tensor Model::forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos,
-                            KVCache& kv_cache) const {
+void Model::forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos, KVCache& kv_cache,
+                          Tensor& out) const {
     const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
 
-    const_cast<ScratchArena&>(scratch_arena_).reset();
+    ScratchScope scope(const_cast<ScratchArena&>(scratch_arena_));
 
-    int64_t layer_shape[] = {1, config_.n_embd}; // [1, 896]
+    int64_t layer_shape[] = {1, config_.n_embd};
 
     Tensor attn_in;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(attn_in, layer_shape, DType::F32);
+    Tensor attn_out;
+    Tensor x1;
+    Tensor ffn_in;
+    Tensor ffn_out;
+
+    auto& arena = const_cast<ScratchArena&>(scratch_arena_);
+
+    arena.alloc(attn_in, layer_shape, DType::F32);
+    arena.alloc(attn_out, layer_shape, DType::F32);
+    arena.alloc(x1, layer_shape, DType::F32);
+    arena.alloc(ffn_in, layer_shape, DType::F32);
+    arena.alloc(ffn_out, layer_shape, DType::F32);
+
     ops::rms_norm(x, lw.attn_norm, attn_in, config_.rms_eps);
 
-    Tensor attn_out;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(attn_out, layer_shape, DType::F32);
     attention(layer_idx, attn_in, pos, kv_cache, attn_out);
 
-    Tensor x1;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(x1, layer_shape, DType::F32);
     ops::add(x, attn_out, x1);
 
-    Tensor ffn_in;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(ffn_in, layer_shape, DType::F32);
     ops::rms_norm(x1, lw.ffn_norm, ffn_in, config_.rms_eps);
 
-    Tensor ffn_out = feed_forward(layer_idx, ffn_in);
+    feed_forward(layer_idx, ffn_in, ffn_out);
 
-    Tensor x2;
-    const_cast<ScratchArena&>(scratch_arena_).alloc(x2, layer_shape, DType::F32);
-    ops::add(x1, ffn_out, x2);
-
-    return x2;
+    ops::add(x1, ffn_out, out);
 }
 
 Tensor Model::forward(TokenId token, int64_t pos, KVCache& kv_cache) const {
@@ -276,14 +297,26 @@ Tensor Model::forward(TokenId token, int64_t pos, KVCache& kv_cache) const {
                                 std::to_string(config_.vocab_size) + ")");
     }
 
+    scratch_arena_.reset();
+
     Tensor x = Tensor::zeros({1, config_.n_embd});
+    Tensor next = Tensor::zeros({1, config_.n_embd});
     auto embd_row = token_embd_.row(token);
+    
+    std::cout << "embedding[0..4]: ";
+
+    for (int i = 0; i < 5; i++)
+        std::cout << embd_row[i] << " ";
+
+    std::cout << "\n";
+
     auto x_span = x.as_f32();
     for (std::size_t i = 0; i < x_span.size(); ++i)
         x_span[i] = embd_row[i];
 
     for (int64_t l = 0; l < config_.n_layers; ++l) {
-        x = forward_layer(l, x, pos, kv_cache);
+        forward_layer(l, x, pos, kv_cache, next);
+        std::swap(x, next);
     }
 
     Tensor x_norm;
@@ -292,10 +325,33 @@ Tensor Model::forward(TokenId token, int64_t pos, KVCache& kv_cache) const {
     ops::rms_norm(x, output_norm_, x_norm, config_.rms_eps);
 
     x_norm = Tensor::view(x_norm.data(), {1, config_.n_embd}, DType::F32);
-    int64_t logits_shape[] = {1, config_.vocab_size};
+    int64_t lm_head_out =
+        (output_weight_.dim(0) == x_norm.dim(1)) ? output_weight_.dim(1) : output_weight_.dim(0);
+
+    if (lm_head_out != config_.vocab_size) {
+        static bool warned = false;
+        if (!warned) {
+            std::fprintf(stderr,
+                         "warning: output_weight_ out_features (%lld) != config_.vocab_size (%lld) "
+                         "-- likely padded vocab, logits beyond vocab_size will be ignored at "
+                         "sampling time\n",
+                         static_cast<long long>(lm_head_out),
+                         static_cast<long long>(config_.vocab_size));
+            warned = true;
+        }
+    }
+
+    int64_t logits_shape[] = {1, lm_head_out};
     Tensor logits;
     const_cast<ScratchArena&>(scratch_arena_).alloc(logits, logits_shape, DType::F32);
     linear(x_norm, output_weight_, logits);
+
+    if (lm_head_out > config_.vocab_size) {
+        auto span = logits.as_f32();
+        for (int64_t i = config_.vocab_size; i < lm_head_out; ++i) {
+            span[i] = -std::numeric_limits<float>::infinity();
+        }
+    }
 
     return logits;
 }

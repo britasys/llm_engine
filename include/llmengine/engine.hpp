@@ -1,13 +1,14 @@
 #pragma once
 
-#include <cstdint>
-#include <string>
-#include <vector>
-
 #include "kv_cache.hpp"
 #include "model.hpp"
 #include "sampler.hpp"
 #include "tokenizer.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
 
 namespace llmengine {
 
@@ -23,12 +24,13 @@ class Engine {
 public:
     Engine(Model& model, Tokenizer& tokenizer, uint32_t seed = 42);
 
-    [[nodiscard]]
+    using TokenCallback = std::function<void(TokenId, const std::string&)>;
     std::vector<TokenId> generate(const std::vector<TokenId>& prompt,
-                                  const GenerationConfig& config = {});
-
+                                  const GenerationConfig& config = {},
+                                  const TokenCallback& on_token = nullptr);
     [[nodiscard]]
-    std::string generate_text(const std::string& prompt, const GenerationConfig& config = {});
+    std::string generate_text(const std::string& prompt, const GenerationConfig& config = {},
+                              const TokenCallback& on_token = nullptr);
 
     void reset();
 

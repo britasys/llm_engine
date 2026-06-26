@@ -24,7 +24,8 @@ TokenId Engine::pick_next_token(const Tensor& logits, const GenerationConfig& co
 }
 
 std::vector<TokenId> Engine::generate(const std::vector<TokenId>& prompt,
-                                      const GenerationConfig& config) {
+                                      const GenerationConfig& config,
+                                      const TokenCallback& on_token) {
     if (prompt.empty()) {
         throw std::runtime_error("prompt cannot be empty");
     }
@@ -50,13 +51,15 @@ std::vector<TokenId> Engine::generate(const std::vector<TokenId>& prompt,
 
     for (int32_t i = 0; i < config.max_new_tokens; ++i) {
         TokenId next_token = pick_next_token(logits, config);
-
-        if (config.eos_token >= 0 && next_token == config.eos_token) break;
+        if (config.eos_token >= 0 && next_token == config.eos_token)
+            break;
 
         generated.push_back(next_token);
+        if (on_token)
+            on_token(next_token, tokenizer_.decode(next_token));
 
-        if (pos >= capacity) break; // out of context window: stop before forward() overruns kv_cache_
-
+        if (pos >= capacity)
+            break;
         logits = model_.forward(next_token, pos, kv_cache_);
         ++pos;
     }
@@ -64,11 +67,10 @@ std::vector<TokenId> Engine::generate(const std::vector<TokenId>& prompt,
     return generated;
 }
 
-std::string Engine::generate_text(const std::string& prompt, const GenerationConfig& config) {
+std::string Engine::generate_text(const std::string& prompt, const GenerationConfig& config,
+                                  const TokenCallback& on_token) {
     auto prompt_tokens = tokenizer_.encode(prompt);
-
-    auto output_tokens = generate(prompt_tokens, config);
-
+    auto output_tokens = generate(prompt_tokens, config, on_token);
     return tokenizer_.decode(output_tokens);
 }
 

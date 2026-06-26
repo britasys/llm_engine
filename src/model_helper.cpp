@@ -1,6 +1,7 @@
 #include "llmengine/model_helper.hpp"
 
 #include <cstring>
+#include <iostream>
 
 namespace llmengine {
 
@@ -449,6 +450,7 @@ Tensor dequantize_q8_0_to_f32(const Tensor& t) {
 
 Tensor load_f32(GGUFLoader& loader, const std::string& name) {
     Tensor t = loader.tensor(name);
+    
     switch (t.dtype()) {
     case DType::F32:
         return t;
