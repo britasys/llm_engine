@@ -568,19 +568,27 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
 namespace {
 
 Tensor linear(const Tensor& x, const Tensor& w) {
-    if (x.ndim() != 2 || w.ndim() != 2)
-        throw std::runtime_error("linear: expected 2D tensors, got x=" + x.shape_string() +
-                                 " w=" + w.shape_string());
     int64_t in_features = x.dim(1);
 
     if (w.dim(1) == in_features) {
-        return ops::matmul(x, ops::transpose(w));
+        int64_t out_features = w.dim(0);
+        Tensor out = Tensor::zeros({1, out_features});
+        auto x_span = x.as_f32();
+        auto out_span = out.as_f32();
+        for (int64_t o = 0; o < out_features; ++o) {
+            auto wrow = w.row(o);
+            float acc = 0.0f;
+            for (int64_t i = 0; i < in_features; ++i)
+                acc += x_span[i] * wrow[i];
+            out_span[o] = acc;
+        }
+        return out;
     }
     if (w.dim(0) == in_features) {
         return ops::matmul(x, w);
     }
     throw std::runtime_error("linear: weight shape " + w.shape_string() +
-                             " is incompatible with input feature count " +
+                             " incompatible with input feature count " +
                              std::to_string(in_features));
 }
 
