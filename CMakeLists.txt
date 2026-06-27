@@ -49,12 +49,6 @@ add_library(llmengine
     src/rope_cache.cpp
     src/scratch_arena.cpp
     src/tokenizer.cpp
-    src/tokenizer_bpe.cpp
-    src/tokenizer_decoder.cpp
-    src/tokenizer_sentencepiece.cpp
-    src/tokenizer_special.cpp
-    src/tokenizer_utf8.cpp
-    src/tokenizer_unigram.cpp
 )
 
 target_include_directories(llmengine PUBLIC
@@ -81,10 +75,10 @@ target_link_libraries(llmengine PUBLIC Threads::Threads ggml)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# if(LLMENGINE_BUILD_TESTS)
-#     enable_testing()
-#     add_subdirectory(tests)
-# endif()
+if(LLMENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ---------------------------------------------------------------------------
 # Benchmarks

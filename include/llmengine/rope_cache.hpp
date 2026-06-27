@@ -30,9 +30,7 @@ public:
     }
 
     [[nodiscard]]
-    const RopePair* row(int64_t position) const noexcept {
-        return table_.data() + position * half_dim_;
-    }
+    const RopePair* row(int64_t position) const;
 
 private:
     int64_t max_seq_len_ = 0;

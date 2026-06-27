@@ -102,8 +102,11 @@ Model::Model(GGUFLoader& loader) : config_{ModelConfig::from_metadata(loader)}, 
         LayerWeights lw;
         lw.attn_norm = load_tensor_native(weights_ctx_, loader, p + "attn_norm.weight");
         lw.wq = load_tensor_native(weights_ctx_, loader, p + "attn_q.weight");
+        lw.bq = load_tensor_native(weights_ctx_, loader, p + "attn_q.bias");
         lw.wk = load_tensor_native(weights_ctx_, loader, p + "attn_k.weight");
+        lw.bk = load_tensor_native(weights_ctx_, loader, p + "attn_k.bias");
         lw.wv = load_tensor_native(weights_ctx_, loader, p + "attn_v.weight");
+        lw.bv = load_tensor_native(weights_ctx_, loader, p + "attn_v.bias");
         lw.wo = load_tensor_native(weights_ctx_, loader, p + "attn_output.weight");
         lw.ffn_norm = load_tensor_native(weights_ctx_, loader, p + "ffn_norm.weight");
         lw.w_gate = load_tensor_native(weights_ctx_, loader, p + "ffn_gate.weight");
@@ -143,15 +146,22 @@ ggml_tensor* Model::forward(TokenId token, int64_t pos, ggml_tensor* k_cache, gg
         ggml_tensor* cur = ggml_rms_norm(ctx, x, config_.rms_eps);
         cur = ggml_mul(ctx, cur, lw.attn_norm);
 
-        ggml_tensor* q = ggml_mul_mat(ctx, lw.wq, cur);
-        ggml_tensor* k = ggml_mul_mat(ctx, lw.wk, cur);
-        ggml_tensor* v = ggml_mul_mat(ctx, lw.wv, cur);
+        // ggml_tensor* q = ggml_mul_mat(ctx, lw.wq, cur);
+        // ggml_tensor* k = ggml_mul_mat(ctx, lw.wk, cur);
+        // ggml_tensor* v = ggml_mul_mat(ctx, lw.wv, cur);
+
+        ggml_tensor* q = ggml_add(ctx, ggml_mul_mat(ctx, lw.wq, cur), lw.bq);
+        ggml_tensor* k = ggml_add(ctx, ggml_mul_mat(ctx, lw.wk, cur), lw.bk);
+        ggml_tensor* v = ggml_add(ctx, ggml_mul_mat(ctx, lw.wv, cur), lw.bv);
 
         ggml_tensor* pos_tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
         inline_assign_i32(pos_tensor, 0, static_cast<int32_t>(pos));
 
-        q = ggml_rope_inplace(ctx, ggml_reshape_3d(ctx, q, head_dim, n_heads, 1), pos_tensor, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX);
-        k = ggml_rope_inplace(ctx, ggml_reshape_3d(ctx, k, head_dim, n_kv_heads, 1), pos_tensor, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX);
+        q = ggml_rope_ext(ctx, ggml_reshape_3d(ctx, q, head_dim, n_heads, 1), pos_tensor, nullptr, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX,
+                          static_cast<int>(config_.max_seq_len), config_.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
+        k = ggml_rope_ext(ctx, ggml_reshape_3d(ctx, k, head_dim, n_kv_heads, 1), pos_tensor, nullptr, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX,
+                          static_cast<int>(config_.max_seq_len), config_.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
         const size_t layer_offset_k = static_cast<size_t>(l * layer_stride) * k_elem_size;
         const size_t layer_offset_v = static_cast<size_t>(l * layer_stride) * v_elem_size;
@@ -168,11 +178,15 @@ ggml_tensor* Model::forward(TokenId token, int64_t pos, ggml_tensor* k_cache, gg
 
         q = ggml_scale_inplace(ctx, q, 1.0f / std::sqrt(static_cast<float>(head_dim)));
 
-        ggml_tensor* K_active =
-            ggml_view_3d(ctx, k_cache, head_dim, kv_len, n_kv_heads, head_dim * n_kv_heads * k_elem_size, head_dim * k_elem_size, layer_offset_k);
+        ggml_tensor* K_active = ggml_view_3d(ctx, k_cache, head_dim, kv_len, n_kv_heads,
+                                             /*nb1=*/n_kv_heads * head_dim * k_elem_size, // stride between positions
+                                             /*nb2=*/head_dim * k_elem_size,              // stride between heads
+                                             layer_offset_k);
 
-        ggml_tensor* V_raw =
-            ggml_view_3d(ctx, v_cache, head_dim, kv_len, n_kv_heads, head_dim * n_kv_heads * v_elem_size, head_dim * v_elem_size, layer_offset_v);
+        ggml_tensor* V_raw = ggml_view_3d(ctx, v_cache, head_dim, kv_len, n_kv_heads,
+                                          /*nb1=*/n_kv_heads * head_dim * v_elem_size,
+                                          /*nb2=*/head_dim * v_elem_size, layer_offset_v);
+
         ggml_tensor* V_active = ggml_cont(ctx, ggml_permute(ctx, V_raw, 1, 0, 2, 3));
 
         ggml_tensor* q_perm = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
@@ -198,6 +212,7 @@ ggml_tensor* Model::forward(TokenId token, int64_t pos, ggml_tensor* k_cache, gg
 
     x = ggml_rms_norm(ctx, x, config_.rms_eps);
     x = ggml_mul(ctx, x, output_norm_);
+
     ggml_tensor* logits = ggml_mul_mat(ctx, output_weight_, x);
 
     ggml_build_forward_expand(graph, logits);
