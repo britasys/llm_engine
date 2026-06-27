@@ -1,346 +1,243 @@
-// src/model.cpp
 #include "llmengine/model.hpp"
-#include "llmengine/model_helper.hpp"
-#include "llmengine/ops.hpp"
-
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <limits>
 #include <stdexcept>
 
 namespace llmengine {
 
 namespace {
-std::size_t calculate_arena_size(const ModelConfig& config) {
-    std::size_t attn_mem = (2 * config.n_embd) + (2 * config.n_kv_heads * config.head_dim());
-    attn_mem *= sizeof(float);
+ggml_tensor* load_tensor_native(ggml_context* ctx, GGUFLoader& loader, const std::string& name) {
+    if (!loader.has_tensor(name))
+        throw std::runtime_error("Missing tensor: " + name);
+    const auto& info = loader.tensor_info(name);
 
-    std::size_t ffn_mem = 3 * config.n_ff * sizeof(float);
-    std::size_t peak_bytes = std::max(attn_mem, ffn_mem);
-    std::size_t raw_estimate = peak_bytes * 8;
-    constexpr std::size_t kMinFloor = 4 * 1024 * 1024;
+    ggml_tensor* t = nullptr;
+    if (info.shape.size() == 1)
+        t = ggml_new_tensor_1d(ctx, info.dtype, info.shape[0]);
+    else if (info.shape.size() == 2)
+        t = ggml_new_tensor_2d(ctx, info.dtype, info.shape[0], info.shape[1]);
+    else if (info.shape.size() == 3)
+        t = ggml_new_tensor_3d(ctx, info.dtype, info.shape[0], info.shape[1], info.shape[2]);
+    else if (info.shape.size() == 4)
+        t = ggml_new_tensor_4d(ctx, info.dtype, info.shape[0], info.shape[1], info.shape[2], info.shape[3]);
 
-    return std::max(raw_estimate, kMinFloor);
+    if (!t)
+        throw std::runtime_error("Failed to allocate weight layout: " + name);
+    t->data = const_cast<void*>(loader.tensor_data(name));
+    return t;
+}
+
+std::size_t calculate_scratch_size(const ModelConfig& config) {
+    (void)config;
+    return 128ULL * 1024ULL * 1024ULL;
+}
+
+int64_t get_meta_int(const std::unordered_map<std::string, std::string>& meta, const std::string& key, int64_t default_val) {
+    auto it = meta.find(key);
+    if (it == meta.end() || it->second.empty())
+        return default_val;
+    try {
+        return std::stoll(it->second);
+    } catch (...) {
+        return default_val;
+    }
+}
+
+int64_t count_tokenizer_vocab(const std::unordered_map<std::string, std::string>& meta) {
+    auto it = meta.find("tokenizer.ggml.tokens");
+    if (it == meta.end() || it->second.size() < 2)
+        return 0;
+    const std::string& s = it->second;
+    if (s.front() != '[' || s.back() != ']')
+        return 0;
+    if (s.size() == 2)
+        return 0;
+
+    int64_t count = 1;
+    bool in_string = false;
+    for (std::size_t i = 1; i + 1 < s.size(); ++i) {
+        char c = s[i];
+        if (c == '\\' && in_string) {
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (c == ',' && !in_string)
+            ++count;
+    }
+    return count;
+}
+
+float get_meta_float(const std::unordered_map<std::string, std::string>& meta, const std::string& key, float default_val) {
+    auto it = meta.find(key);
+    if (it == meta.end() || it->second.empty())
+        return default_val;
+    try {
+        return std::stof(it->second);
+    } catch (...) {
+        return default_val;
+    }
+}
+
+void inline_assign_i32(ggml_tensor* t, size_t index, int32_t val) {
+    if (t && t->data) {
+        static_cast<int32_t*>(t->data)[index] = val;
+    }
 }
 } // namespace
 
 ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std::string>& meta) {
     ModelConfig c;
-
     auto arch_it = meta.find("general.architecture");
     std::string arch = (arch_it != meta.end()) ? arch_it->second : "llama";
 
-    c.vocab_size = meta_int(meta, arch + ".vocab_size", 0);
-    if (c.vocab_size == 0) {
-        auto tokens_it = meta.find("tokenizer.ggml.tokens");
-        if (tokens_it != meta.end() && !tokens_it->second.empty()) {
-            const std::string& tokens_blob = tokens_it->second;
-            std::size_t delimiter_count = std::count(tokens_blob.begin(), tokens_blob.end(), ',');
-            c.vocab_size = delimiter_count + (tokens_blob.back() != ',' ? 1 : 0);
-        } else {
-            c.vocab_size = 0;
-        }
-    }
-
-    c.n_embd = meta_int(meta, arch + ".embedding_length", 0);
-    c.n_layers = meta_int(meta, arch + ".block_count", 0);
-    c.n_heads = meta_int(meta, arch + ".attention.head_count", 0);
-    c.n_kv_heads = meta_int(meta, arch + ".attention.head_count_kv", c.n_heads);
-    c.n_ff = meta_int(meta, arch + ".feed_forward_length", 0);
-    c.max_seq_len = meta_int(meta, arch + ".context_length", 2048);
-    c.rope_theta = meta_float(meta, arch + ".rope.freq_base", 10000.0f);
-    c.rms_eps = meta_float(meta, arch + ".attention.layer_norm_rms_epsilon", 1e-5f);
+    c.vocab_size = get_meta_int(meta, arch + ".vocab_size", 0);
+    if (c.vocab_size <= 0)
+        c.vocab_size = count_tokenizer_vocab(meta);
+    c.n_embd = get_meta_int(meta, arch + ".embedding_length", 0);
+    c.n_layers = get_meta_int(meta, arch + ".block_count", 0);
+    c.n_heads = get_meta_int(meta, arch + ".attention.head_count", 0);
+    c.n_kv_heads = get_meta_int(meta, arch + ".attention.head_count_kv", c.n_heads);
+    c.n_ff = get_meta_int(meta, arch + ".feed_forward_length", 0);
+    c.max_seq_len = get_meta_int(meta, arch + ".context_length", 2048);
+    c.rope_theta = get_meta_float(meta, arch + ".rope.freq_base", 10000.0f);
+    c.rms_eps = get_meta_float(meta, arch + ".attention.layer_norm_rms_epsilon", 1e-5f);
 
     if (c.vocab_size <= 0 || c.n_embd <= 0 || c.n_layers <= 0 || c.n_heads <= 0) {
-        throw std::runtime_error(
-            "ModelConfig::from_metadata: missing required architecture metadata "
-            "(vocab_size/embedding_length/block_count/attention.head_count) "
-            "for architecture '" +
-            arch + "'");
+        throw std::runtime_error("ModelConfig::from_metadata: architecture configuration missing.");
+    }
+    if (c.n_kv_heads <= 0 || c.n_heads % c.n_kv_heads != 0) {
+        throw std::runtime_error("ModelConfig::from_metadata: invalid head_count_kv.");
+    }
+    if (c.n_embd % c.n_heads != 0) {
+        throw std::runtime_error("ModelConfig::from_metadata: embedding_length not divisible by head_count.");
     }
     return c;
 }
 
-void linear(const Tensor& x, const Tensor& w, Tensor& out) {
-    int64_t in_features = x.dim(1);
+Model::Model(GGUFLoader& loader) : config_{ModelConfig::from_metadata(loader.metadata())}, scratch_arena_{calculate_scratch_size(config_)} {
+    backend_ = ggml_backend_dev_init(ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr);
+    if (!backend_)
+        throw std::runtime_error("Failed to initialize CPU backend.");
 
-    if (w.dim(1) == in_features) {
-        int64_t out_features = w.dim(0);
+    ggml_init_params params = {.mem_size = loader.tensors().size() * ggml_tensor_overhead() + 4096, .mem_buffer = nullptr, .no_alloc = true};
+    weights_ctx_ = ggml_init(params);
+    if (!weights_ctx_)
+        throw std::runtime_error("Failed to initialize weights context.");
 
-        auto x_span = x.as_f32();
-        auto out_span = out.as_f32();
+    token_embd_ = load_tensor_native(weights_ctx_, loader, "token_embd.weight");
+    output_norm_ = load_tensor_native(weights_ctx_, loader, "output_norm.weight");
+    output_weight_ = loader.has_tensor("output.weight") ? load_tensor_native(weights_ctx_, loader, "output.weight") : token_embd_;
 
-        for (int64_t o = 0; o < out_features; ++o) {
-            auto wrow = w.row(o);
-            float acc = 0.0f;
-            for (int64_t i = 0; i < in_features; ++i) {
-                acc += x_span[i] * wrow[i];
-            }
-            out_span[o] = acc;
-        }
-        return;
-    }
-
-    if (w.dim(0) == in_features) {
-        return ops::matmul(x, w, out);
-    }
-
-    throw std::runtime_error("linear: weight shape " + w.shape_string() +
-                             " incompatible with input feature count " +
-                             std::to_string(in_features));
-}
-
-Model::Model(GGUFLoader& loader)
-    : config_{ModelConfig::from_metadata(loader.metadata())},
-      scratch_arena_{calculate_arena_size(config_)} {
-    token_embd_ = load_f32(loader, "token_embd.weight");
-    output_norm_ = load_f32(loader, "output_norm.weight");
-    rope_cache_.initialize(config_.max_seq_len, config_.head_dim(), config_.rope_theta);
-    output_weight_ = loader.has_tensor("output.weight") ? load_f32(loader, "output.weight")
-                                                        : load_f32(loader, "token_embd.weight");
     layers_.reserve(static_cast<std::size_t>(config_.n_layers));
     for (int64_t i = 0; i < config_.n_layers; ++i) {
         std::string p = "blk." + std::to_string(i) + ".";
         LayerWeights lw;
-        lw.attn_norm = load_f32(loader, p + "attn_norm.weight");
-        lw.wq = load_f32(loader, p + "attn_q.weight");
-        lw.wk = load_f32(loader, p + "attn_k.weight");
-        lw.wv = load_f32(loader, p + "attn_v.weight");
-        lw.wo = load_f32(loader, p + "attn_output.weight");
-        lw.ffn_norm = load_f32(loader, p + "ffn_norm.weight");
-        lw.w_gate = load_f32(loader, p + "ffn_gate.weight");
-        lw.w_up = load_f32(loader, p + "ffn_up.weight");
-        lw.w_down = load_f32(loader, p + "ffn_down.weight");
-
-        layers_.push_back(std::move(lw));
+        lw.attn_norm = load_tensor_native(weights_ctx_, loader, p + "attn_norm.weight");
+        lw.wq = load_tensor_native(weights_ctx_, loader, p + "attn_q.weight");
+        lw.wk = load_tensor_native(weights_ctx_, loader, p + "attn_k.weight");
+        lw.wv = load_tensor_native(weights_ctx_, loader, p + "attn_v.weight");
+        lw.wo = load_tensor_native(weights_ctx_, loader, p + "attn_output.weight");
+        lw.ffn_norm = load_tensor_native(weights_ctx_, loader, p + "ffn_norm.weight");
+        lw.w_gate = load_tensor_native(weights_ctx_, loader, p + "ffn_gate.weight");
+        lw.w_up = load_tensor_native(weights_ctx_, loader, p + "ffn_up.weight");
+        lw.w_down = load_tensor_native(weights_ctx_, loader, p + "ffn_down.weight");
+        layers_.push_back(lw);
     }
 }
 
-void Model::attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos, KVCache& kv_cache,
-                      Tensor& out) const {
-    const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
+Model::~Model() {
+    if (weights_ctx_)
+        ggml_free(weights_ctx_);
+}
+
+ggml_tensor* Model::forward(TokenId token, int64_t pos, ggml_tensor* k_cache, ggml_tensor* v_cache) const {
+    scratch_arena_.reset();
+    ggml_context* ctx = scratch_arena_.ctx();
+
+    ggml_tensor* token_tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    inline_assign_i32(token_tensor, 0, token);
+
+    ggml_tensor* x = ggml_get_rows(ctx, token_embd_, token_tensor);
+
     const int64_t head_dim = config_.head_dim();
     const int64_t n_heads = config_.n_heads;
     const int64_t n_kv_heads = config_.n_kv_heads;
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    const int64_t kv_len = pos + 1;
+    const int64_t layer_stride = config_.max_seq_len * n_kv_heads * head_dim;
+    const size_t k_elem_size = ggml_element_size(k_cache);
+    const size_t v_elem_size = ggml_element_size(v_cache);
 
-    auto& arena = const_cast<ScratchArena&>(scratch_arena_);
-    ScratchScope scope(arena);
-
-    int64_t q_out_features = (lw.wq.dim(0) == x_norm.dim(1)) ? lw.wq.dim(1) : lw.wq.dim(0);
-    int64_t k_out_features = (lw.wk.dim(0) == x_norm.dim(1)) ? lw.wk.dim(1) : lw.wk.dim(0);
-    int64_t v_out_features = (lw.wv.dim(0) == x_norm.dim(1)) ? lw.wv.dim(1) : lw.wv.dim(0);
-
-    int64_t q_shape[] = {1, q_out_features};
-    int64_t k_shape[] = {1, k_out_features};
-    int64_t v_shape[] = {1, v_out_features};
-
-    Tensor q, k, v;
-    arena.alloc(q, q_shape, DType::F32);
-    arena.alloc(k, k_shape, DType::F32);
-    arena.alloc(v, v_shape, DType::F32);
-
-    linear(x_norm, lw.wq, q);
-    linear(x_norm, lw.wk, k);
-    linear(x_norm, lw.wv, v);
-
-    auto q_span = q.as_f32();
-    auto k_span = k.as_f32();
-
-    for (int64_t h = 0; h < n_heads; ++h) {
-        apply_rope(q_span.subspan(static_cast<std::size_t>(h * head_dim),
-                                  static_cast<std::size_t>(head_dim)),
-                   pos, rope_cache_);
-    }
-    for (int64_t h = 0; h < n_kv_heads; ++h) {
-        apply_rope(k_span.subspan(static_cast<std::size_t>(h * head_dim),
-                                  static_cast<std::size_t>(head_dim)),
-                   pos, rope_cache_);
-    }
-
-    Tensor k_view = Tensor::view(k.data(), {n_kv_heads, head_dim}, DType::F32);
-    Tensor v_view = Tensor::view(v.data(), {n_kv_heads, head_dim}, DType::F32);
-    kv_cache.append(layer_idx, k_view, v_view);
-
-    Tensor cached_keys = kv_cache.keys(layer_idx);
-    Tensor cached_values = kv_cache.values(layer_idx);
-    const int64_t seq_len = pos + 1;
-
-    auto ck_span = cached_keys.as_f32();
-    auto cv_span = cached_values.as_f32();
-    const int64_t group_size = n_heads / n_kv_heads;
-
-    Tensor attn_out;
-    arena.alloc(attn_out, q_shape, DType::F32);
-    std::fill_n(attn_out.as_f32().data(), attn_out.numel(), 0.0f);
-    auto out_span = attn_out.as_f32();
-
-    std::vector<float> scores(static_cast<std::size_t>(seq_len));
-
-    for (int64_t h = 0; h < n_heads; ++h) {
-        int64_t kv_h = h / group_size;
-        auto q_head = q_span.subspan(static_cast<std::size_t>(h * head_dim),
-                                     static_cast<std::size_t>(head_dim));
-
-        for (int64_t t = 0; t < seq_len; ++t) {
-            std::size_t key_off = static_cast<std::size_t>((t * n_kv_heads + kv_h) * head_dim);
-            float dot = 0.0f;
-            for (int64_t d = 0; d < head_dim; ++d) {
-                dot += q_head[static_cast<std::size_t>(d)] *
-                       ck_span[key_off + static_cast<std::size_t>(d)];
-            }
-            scores[static_cast<std::size_t>(t)] = dot * scale;
-        }
-
-        {
-            float max_s = scores[0];
-            for (float s : scores)
-                max_s = std::max(max_s, s);
-            float sum = 0.0f;
-            for (float& s : scores) {
-                s = std::exp(s - max_s);
-                sum += s;
-            }
-            for (float& s : scores)
-                s /= sum;
-        }
-
-        auto out_head = out_span.subspan(static_cast<std::size_t>(h * head_dim),
-                                         static_cast<std::size_t>(head_dim));
-        for (int64_t t = 0; t < seq_len; ++t) {
-            std::size_t val_off = static_cast<std::size_t>((t * n_kv_heads + kv_h) * head_dim);
-            float w = scores[static_cast<std::size_t>(t)];
-            for (int64_t d = 0; d < head_dim; ++d) {
-                out_head[static_cast<std::size_t>(d)] +=
-                    w * cv_span[val_off + static_cast<std::size_t>(d)];
-            }
-        }
-    }
-
-    linear(attn_out, lw.wo, out);
-}
-
-void Model::feed_forward(int64_t layer_idx, const Tensor& x_norm, Tensor& out) const {
-    const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
-
-    auto& arena = const_cast<ScratchArena&>(scratch_arena_);
-    ScratchScope scope(arena);
-
-    int64_t ff_shape[] = {1, config_.n_ff};
-
-    Tensor gate_linear;
-    Tensor up;
-    Tensor gate;
-
-    arena.alloc(gate_linear, ff_shape, DType::F32);
-    arena.alloc(up, ff_shape, DType::F32);
-    arena.alloc(gate, ff_shape, DType::F32);
-
-    linear(x_norm, lw.w_gate, gate_linear);
-    linear(x_norm, lw.w_up, up);
-
-    ops::silu(gate_linear, gate);
-
-    auto gate_span = gate.as_f32();
-    auto up_span = up.as_f32();
-
-    for (std::size_t i = 0; i < gate_span.size(); ++i)
-        gate_span[i] *= up_span[i];
-
-    linear(gate, lw.w_down, out);
-}
-
-void Model::forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos, KVCache& kv_cache,
-                          Tensor& out) const {
-    const auto& lw = layers_[static_cast<std::size_t>(layer_idx)];
-
-    auto& arena = const_cast<ScratchArena&>(scratch_arena_);
-    ScratchScope scope(arena);
-
-    int64_t layer_shape[] = {1, config_.n_embd};
-
-    Tensor attn_in;
-    Tensor attn_out;
-    Tensor x1;
-    Tensor ffn_in;
-    Tensor ffn_out;
-
-    arena.alloc(attn_in, layer_shape, DType::F32);
-    arena.alloc(attn_out, layer_shape, DType::F32);
-    arena.alloc(x1, layer_shape, DType::F32);
-    arena.alloc(ffn_in, layer_shape, DType::F32);
-    arena.alloc(ffn_out, layer_shape, DType::F32);
-
-    ops::rms_norm(x, lw.attn_norm, attn_in, config_.rms_eps);
-
-    attention(layer_idx, attn_in, pos, kv_cache, attn_out);
-
-    ops::add(x, attn_out, x1);
-
-    ops::rms_norm(x1, lw.ffn_norm, ffn_in, config_.rms_eps);
-
-    feed_forward(layer_idx, ffn_in, ffn_out);
-
-    ops::add(x1, ffn_out, out);
-}
-
-Tensor Model::forward(TokenId token, int64_t pos, KVCache& kv_cache) const {
-    if (token < 0 || token >= config_.vocab_size) {
-        throw std::out_of_range("Model::forward: token id " + std::to_string(token) +
-                                " is out of vocabulary range [0, " +
-                                std::to_string(config_.vocab_size) + ")");
-    }
-
-    scratch_arena_.reset();
-
-    Tensor x = Tensor::zeros({1, config_.n_embd});
-    Tensor next = Tensor::zeros({1, config_.n_embd});
-    auto embd_row = token_embd_.row(token);
-
-    auto x_span = x.as_f32();
-    for (std::size_t i = 0; i < x_span.size(); ++i)
-        x_span[i] = embd_row[i];
+    ggml_cgraph* graph = ggml_new_graph(ctx);
 
     for (int64_t l = 0; l < config_.n_layers; ++l) {
-        forward_layer(l, x, pos, kv_cache, next);
-        std::swap(x, next);
+        const auto& lw = layers_[static_cast<std::size_t>(l)];
+
+        ggml_tensor* cur = ggml_rms_norm(ctx, x, config_.rms_eps);
+        cur = ggml_mul(ctx, cur, lw.attn_norm);
+
+        ggml_tensor* q = ggml_mul_mat(ctx, lw.wq, cur);
+        ggml_tensor* k = ggml_mul_mat(ctx, lw.wk, cur);
+        ggml_tensor* v = ggml_mul_mat(ctx, lw.wv, cur);
+
+        ggml_tensor* pos_tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+        inline_assign_i32(pos_tensor, 0, static_cast<int32_t>(pos));
+
+        q = ggml_rope_inplace(ctx, ggml_reshape_3d(ctx, q, head_dim, n_heads, 1), pos_tensor, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX);
+        k = ggml_rope_inplace(ctx, ggml_reshape_3d(ctx, k, head_dim, n_kv_heads, 1), pos_tensor, static_cast<int>(head_dim), GGML_ROPE_TYPE_NEOX);
+
+        const size_t layer_offset_k = static_cast<size_t>(l * layer_stride) * k_elem_size;
+        const size_t layer_offset_v = static_cast<size_t>(l * layer_stride) * v_elem_size;
+        const size_t pos_offset_k = static_cast<size_t>(pos * n_kv_heads * head_dim) * k_elem_size;
+        const size_t pos_offset_v = static_cast<size_t>(pos * n_kv_heads * head_dim) * v_elem_size;
+
+        ggml_tensor* k_slice = ggml_view_1d(ctx, k_cache, n_kv_heads * head_dim, layer_offset_k + pos_offset_k);
+        ggml_tensor* v_slice = ggml_view_1d(ctx, v_cache, n_kv_heads * head_dim, layer_offset_v + pos_offset_v);
+
+        ggml_tensor* k_write = ggml_cpy(ctx, k, k_slice);
+        ggml_tensor* v_write = ggml_cpy(ctx, v, v_slice);
+        ggml_build_forward_expand(graph, k_write);
+        ggml_build_forward_expand(graph, v_write);
+
+        q = ggml_scale_inplace(ctx, q, 1.0f / std::sqrt(static_cast<float>(head_dim)));
+
+        ggml_tensor* K_active =
+            ggml_view_3d(ctx, k_cache, head_dim, kv_len, n_kv_heads, head_dim * n_kv_heads * k_elem_size, head_dim * k_elem_size, layer_offset_k);
+
+        ggml_tensor* V_raw =
+            ggml_view_3d(ctx, v_cache, head_dim, kv_len, n_kv_heads, head_dim * n_kv_heads * v_elem_size, head_dim * v_elem_size, layer_offset_v);
+        ggml_tensor* V_active = ggml_cont(ctx, ggml_permute(ctx, V_raw, 1, 0, 2, 3));
+
+        ggml_tensor* q_perm = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
+
+        ggml_tensor* scores = ggml_mul_mat(ctx, K_active, q_perm);
+        scores = ggml_soft_max_inplace(ctx, scores);
+
+        ggml_tensor* attn_out = ggml_mul_mat(ctx, V_active, scores);
+        attn_out = ggml_cont(ctx, ggml_permute(ctx, attn_out, 0, 2, 1, 3));
+        attn_out = ggml_reshape_1d(ctx, attn_out, config_.n_embd);
+
+        x = ggml_add(ctx, x, ggml_mul_mat(ctx, lw.wo, attn_out));
+
+        cur = ggml_rms_norm(ctx, x, config_.rms_eps);
+        cur = ggml_mul(ctx, cur, lw.ffn_norm);
+
+        ggml_tensor* gate = ggml_silu_inplace(ctx, ggml_mul_mat(ctx, lw.w_gate, cur));
+        ggml_tensor* up = ggml_mul_mat(ctx, lw.w_up, cur);
+        ggml_tensor* ffn_out = ggml_mul_mat(ctx, lw.w_down, ggml_mul(ctx, gate, up));
+
+        x = ggml_add(ctx, x, ffn_out);
     }
 
-    auto& arena = const_cast<ScratchArena&>(scratch_arena_);
+    x = ggml_rms_norm(ctx, x, config_.rms_eps);
+    x = ggml_mul(ctx, x, output_norm_);
+    ggml_tensor* logits = ggml_mul_mat(ctx, output_weight_, x);
 
-    Tensor x_norm;
-    int64_t final_shape[] = {1, config_.n_embd};
-    arena.alloc(x_norm, final_shape, DType::F32);
-    ops::rms_norm(x, output_norm_, x_norm, config_.rms_eps);
-
-    int64_t lm_head_out =
-        (output_weight_.dim(0) == x_norm.dim(1)) ? output_weight_.dim(1) : output_weight_.dim(0);
-
-    if (lm_head_out != config_.vocab_size) {
-        static bool warned = false;
-        if (!warned) {
-            std::fprintf(stderr,
-                         "warning: output_weight_ out_features (%lld) != config_.vocab_size (%lld) "
-                         "-- likely padded vocab, logits beyond vocab_size will be ignored at "
-                         "sampling time\n",
-                         static_cast<long long>(lm_head_out),
-                         static_cast<long long>(config_.vocab_size));
-            warned = true;
-        }
-    }
-
-    int64_t logits_shape[] = {1, lm_head_out};
-    Tensor logits;
-    arena.alloc(logits, logits_shape, DType::F32);
-    linear(x_norm, output_weight_, logits);
-
-    if (lm_head_out > config_.vocab_size) {
-        auto span = logits.as_f32();
-        for (int64_t i = config_.vocab_size; i < lm_head_out; ++i) {
-            span[i] = -std::numeric_limits<float>::infinity();
-        }
-    }
+    ggml_build_forward_expand(graph, logits);
+    ggml_backend_graph_compute(backend_, graph);
 
     return logits;
 }

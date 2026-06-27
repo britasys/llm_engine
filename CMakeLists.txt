@@ -24,38 +24,29 @@ option(LLMENGINE_NATIVE_ARCH "Compile with -march=native for max local performan
 include(FetchContent)
 
 # ---------------------------------------------------------------------------
-# LibTorch
+# ggml
 # ---------------------------------------------------------------------------
 
-set(LIBTORCH_VERSION "2.7.1")
+include(FetchContent)
+
 FetchContent_Declare(
-    libtorch
-    URL https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip
-)
-FetchContent_GetProperties(libtorch)
-
-if(NOT libtorch_POPULATED)
-    FetchContent_Populate(libtorch)
-endif()
-
-set(Torch_DIR
-    ${libtorch_SOURCE_DIR}/share/cmake/Torch
+    ggml
+    GIT_REPOSITORY https://github.com/ggml-org/ggml.git
+    GIT_TAG eced84c
+    UPDATE_DISCONNECTED ON
 )
 
-find_package(Torch REQUIRED)
+FetchContent_MakeAvailable(ggml)
 
 # ---------------------------------------------------------------------------
 # The core library
 # ---------------------------------------------------------------------------
 add_library(llmengine
-    src/tensor.cpp
     src/gguf_loader.cpp
     src/tokenizer.cpp
-    src/ops.cpp
     src/kv_cache.cpp
     src/sampler.cpp
     src/model.cpp
-    src/model_helper.cpp
     src/engine.cpp
     src/rope_cache.cpp
     src/scratch_arena.cpp
@@ -81,6 +72,8 @@ endif()
 # Threads for future parallel matmul work (std::thread / OpenMP-style fan-out)
 find_package(Threads REQUIRED)
 target_link_libraries(llmengine PUBLIC Threads::Threads)
+
+target_link_libraries(llmengine PUBLIC ggml)
 
 # ---------------------------------------------------------------------------
 # Tests

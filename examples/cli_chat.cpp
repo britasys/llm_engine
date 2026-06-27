@@ -42,6 +42,40 @@ int main(int argc, char** argv) {
 
         loader.load();
 
+        std::cout << "GGUF loaded successfully\n\n";
+        std::cout << "version       : " << loader.version() << '\n';
+        std::cout << "tensors       : " << loader.tensor_count() << '\n';
+        std::cout << "metadata      : " << loader.metadata_count() << "\n\n";
+        std::cout << "Metadata:\n";
+
+        for (const auto& [key, value] : loader.metadata()) {
+            std::cout << "  " << key << '\n';
+        }
+
+        std::cout << "\nFirst tensors:\n";
+
+        int count = 0;
+
+        for (const auto& [name, info] : loader.tensors()) {
+            std::cout << "  " << name << '\n';
+
+            std::cout << "    shape: ";
+
+            for (auto dim : info.shape) {
+                std::cout << dim << " ";
+            }
+
+            std::cout << '\n';
+
+            std::cout << "    dtype: " << static_cast<int>(info.dtype) << '\n';
+
+            std::cout << "    offset: " << info.offset << '\n';
+            std::cout << "    nbytes: " << info.nbytes << "\n\n";
+
+            if (++count == 10)
+                break;
+        }
+
         std::cout << "Loading model...\n";
 
         Model model(loader);
@@ -88,11 +122,16 @@ int main(int argc, char** argv) {
             }
 
             try {
-                auto output = engine.generate_text(line, gen_cfg);
+                std::cout << std::flush; // ensure "> " prompt itself wasn't buffered either
 
-                std::cout << output << "\n\n";
+                engine.generate_text(line, gen_cfg, [](TokenId id, const std::string& piece) {
+                    std::cout << piece;
+                    std::cout.flush();
+                });
+
+                std::cout << "\n\n";
             } catch (const std::exception& e) {
-                std::cerr << "generation error: " << e.what() << '\n';
+                std::cerr << "\ngeneration error: " << e.what() << '\n';
             }
         }
 

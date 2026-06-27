@@ -1,5 +1,4 @@
 #include "llmengine/sampler.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -10,135 +9,115 @@ namespace llmengine {
 Sampler::Sampler(uint32_t seed) : rng_(seed) {}
 
 std::vector<float> Sampler::softmax(const float* logits, std::size_t n, float temperature) {
-    if (temperature <= 0.f) {
-        throw std::runtime_error("temperature must be positive");
-    }
+    if (n == 0)
+        return {};
 
     std::vector<float> probs(n);
-
     float max_logit = logits[0];
-
     for (std::size_t i = 1; i < n; ++i) {
-        max_logit = std::max(max_logit, logits[i]);
+        if (logits[i] > max_logit)
+            max_logit = logits[i];
     }
 
-    float sum = 0.f;
+    float sum = 0.0f;
+    float inv_temp = 1.0f / (temperature > 0.0f ? temperature : 1.0f);
 
     for (std::size_t i = 0; i < n; ++i) {
-        probs[i] = std::exp((logits[i] - max_logit) / temperature);
-
+        probs[i] = std::exp((logits[i] - max_logit) * inv_temp);
         sum += probs[i];
     }
 
-    for (float& p : probs) {
-        p /= sum;
+    for (std::size_t i = 0; i < n; ++i) {
+        probs[i] /= sum;
     }
 
     return probs;
 }
 
-int32_t Sampler::argmax(const Tensor& logits) const {
-    auto values = logits.as_f32();
-
-    return static_cast<int32_t>(
-        std::distance(values.begin(), std::max_element(values.begin(), values.end())));
+int32_t Sampler::argmax(const float* logits, std::size_t n) const {
+    if (n == 0)
+        return -1;
+    return static_cast<int32_t>(std::distance(logits, std::max_element(logits, logits + n)));
 }
 
-int32_t Sampler::sample(const Tensor& logits, float temperature) {
-    auto values = logits.as_f32();
+int32_t Sampler::sample(const float* logits, std::size_t n, float temperature) {
+    if (temperature <= 0.0f) {
+        return argmax(logits, n);
+    }
 
-    auto probs = softmax(values.data(), values.size(), temperature);
-
+    auto probs = softmax(logits, n, temperature);
     std::discrete_distribution<int32_t> dist(probs.begin(), probs.end());
-
     return dist(rng_);
 }
 
-int32_t Sampler::sample_top_k(const Tensor& logits, int32_t k, float temperature) {
-    auto values = logits.as_f32();
-
-    if (k <= 0) {
-        throw std::runtime_error("invalid k");
+int32_t Sampler::sample_top_k(const float* logits, std::size_t n, int32_t k, float temperature) {
+    if (k <= 1 || temperature <= 0.0f) {
+        return argmax(logits, n);
     }
 
-    struct Candidate {
-        int32_t token;
-        float logit;
-    };
-
-    std::vector<Candidate> candidates;
-
-    candidates.reserve(values.size());
-
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        candidates.push_back({static_cast<int32_t>(i), values[i]});
+    auto probs = softmax(logits, n, temperature);
+    std::vector<std::pair<float, int32_t>> indexed_probs(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        indexed_probs[i] = {probs[i], static_cast<int32_t>(i)};
     }
 
-    std::partial_sort(
-        candidates.begin(), candidates.begin() + std::min<std::size_t>(k, candidates.size()),
-        candidates.end(), [](const auto& a, const auto& b) { return a.logit > b.logit; });
+    std::size_t top_k_boundary = std::min(static_cast<std::size_t>(k), n);
+    std::nth_element(indexed_probs.begin(), indexed_probs.begin() + top_k_boundary,
+                     indexed_probs.end(),
+                     [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    k = std::min<int32_t>(k, static_cast<int32_t>(candidates.size()));
-
-    std::vector<float> top_logits(k);
-
-    for (int32_t i = 0; i < k; ++i) {
-        top_logits[i] = candidates[i].logit;
+    std::vector<float> k_probs(top_k_boundary);
+    float sum = 0.0f;
+    for (std::size_t i = 0; i < top_k_boundary; ++i) {
+        k_probs[i] = indexed_probs[i].first;
+        sum += k_probs[i];
     }
 
-    auto probs = softmax(top_logits.data(), top_logits.size(), temperature);
+    for (float& p : k_probs)
+        p /= sum;
 
-    std::discrete_distribution<int32_t> dist(probs.begin(), probs.end());
-
-    return candidates[dist(rng_)].token;
+    std::discrete_distribution<int32_t> dist(k_probs.begin(), k_probs.end());
+    return indexed_probs[static_cast<std::size_t>(dist(rng_))].second;
 }
 
-int32_t Sampler::sample_top_p(const Tensor& logits, float p, float temperature) {
-    auto values = logits.as_f32();
-
-    if (p <= 0.f || p > 1.f) {
-        throw std::runtime_error("invalid p");
+int32_t Sampler::sample_top_p(const float* logits, std::size_t n, float p, float temperature) {
+    if (p <= 0.0f || p >= 1.0f || temperature <= 0.0f) {
+        return argmax(logits, n);
     }
 
-    auto probs = softmax(values.data(), values.size(), temperature);
-
-    struct Candidate {
-        int32_t token;
-        float prob;
-    };
-
-    std::vector<Candidate> candidates;
-
-    for (std::size_t i = 0; i < probs.size(); ++i) {
-        candidates.push_back({static_cast<int32_t>(i), probs[i]});
+    auto probs = softmax(logits, n, temperature);
+    std::vector<std::pair<float, int32_t>> indexed_probs(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        indexed_probs[i] = {probs[i], static_cast<int32_t>(i)};
     }
 
-    std::sort(candidates.begin(), candidates.end(),
-              [](const auto& a, const auto& b) { return a.prob > b.prob; });
+    std::sort(indexed_probs.begin(), indexed_probs.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    float cumulative = 0.f;
-
-    std::vector<Candidate> nucleus;
-
-    for (const auto& c : candidates) {
-        nucleus.push_back(c);
-
-        cumulative += c.prob;
-
-        if (cumulative >= p) {
+    float cumulative_prob = 0.0f;
+    std::size_t cutoff = 0;
+    for (; cutoff < n; ++cutoff) {
+        cumulative_prob += indexed_probs[cutoff].first;
+        if (cumulative_prob >= p) {
+            cutoff++; // Keep the token that pushed us over the threshold boundary
             break;
         }
     }
+    if (cutoff == 0)
+        cutoff = 1;
 
-    std::vector<double> weights;
-
-    for (const auto& c : nucleus) {
-        weights.push_back(c.prob);
+    std::vector<float> p_probs(cutoff);
+    float sum = 0.0f;
+    for (std::size_t i = 0; i < cutoff; ++i) {
+        p_probs[i] = indexed_probs[i].first;
+        sum += p_probs[i];
     }
 
-    std::discrete_distribution<int32_t> dist(weights.begin(), weights.end());
+    for (float& prob : p_probs)
+        prob /= sum;
 
-    return nucleus[dist(rng_)].token;
+    std::discrete_distribution<int32_t> dist(p_probs.begin(), p_probs.end());
+    return indexed_probs[static_cast<std::size_t>(dist(rng_))].second;
 }
 
 } // namespace llmengine

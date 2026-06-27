@@ -1,19 +1,18 @@
-// include/llmengine/model.hpp
 #pragma once
 
 #include <cstdint>
+#include <ggml.h>
+#include <ggml-backend.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "gguf_loader.hpp"
-#include "kv_cache.hpp"
-#include "rope_cache.hpp"
 #include "scratch_arena.hpp"
-#include "tensor.hpp"
-#include "tokenizer.hpp"
 
 namespace llmengine {
+
+using TokenId = int32_t;
 
 struct ModelConfig {
     int64_t vocab_size = 0;
@@ -27,48 +26,46 @@ struct ModelConfig {
     float rms_eps = 1e-5f;
 
     [[nodiscard]] int64_t head_dim() const noexcept { return n_heads > 0 ? n_embd / n_heads : 0; }
-
     [[nodiscard]] static ModelConfig
     from_metadata(const std::unordered_map<std::string, std::string>& meta);
 };
 
 struct LayerWeights {
-    Tensor attn_norm;
-    Tensor wq, wk, wv;
-    Tensor wo;
+    ggml_tensor* attn_norm = nullptr;
+    ggml_tensor* wq = nullptr;
+    ggml_tensor* wk = nullptr;
+    ggml_tensor* wv = nullptr;
+    ggml_tensor* wo = nullptr;
 
-    Tensor ffn_norm;
-    Tensor w_gate;
-    Tensor w_up;
-    Tensor w_down;
+    ggml_tensor* ffn_norm = nullptr;
+    ggml_tensor* w_gate = nullptr;
+    ggml_tensor* w_up = nullptr;
+    ggml_tensor* w_down = nullptr;
 };
 
 class Model {
 public:
     explicit Model(GGUFLoader& loader);
+    ~Model();
 
     [[nodiscard]] const ModelConfig& config() const noexcept { return config_; }
 
-    [[nodiscard]] Tensor forward(TokenId token, int64_t pos, KVCache& kv_cache) const;
+    // Computes the forward pass and returns a pointer to a transient logits ggml_tensor
+    [[nodiscard]] ggml_tensor* forward(TokenId token, int64_t pos, ggml_tensor* k_cache,
+                                       ggml_tensor* v_cache) const;
 
 private:
     ModelConfig config_;
-
-    RopeCache rope_cache_;
-
+    ggml_context* weights_ctx_ = nullptr;
     mutable ScratchArena scratch_arena_;
+    
+    ggml_backend_t backend_;
 
-    Tensor token_embd_;
-    Tensor output_norm_;
-    Tensor output_weight_;
+    ggml_tensor* token_embd_ = nullptr;
+    ggml_tensor* output_norm_ = nullptr;
+    ggml_tensor* output_weight_ = nullptr;
 
     std::vector<LayerWeights> layers_;
-
-    void attention(int64_t layer_idx, const Tensor& x_norm, int64_t pos, KVCache& kv_cache,
-                   Tensor& out) const;
-    void forward_layer(int64_t layer_idx, const Tensor& x, int64_t pos, KVCache& kv_cache,
-                       Tensor& out) const;
-    void feed_forward(int64_t layer_idx, const Tensor& x_norm, Tensor& out) const;
 };
 
 } // namespace llmengine

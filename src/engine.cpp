@@ -1,81 +1,65 @@
 #include "llmengine/engine.hpp"
-
 #include <stdexcept>
 
 namespace llmengine {
 
-Engine::Engine(Model& model, Tokenizer& tokenizer, uint32_t seed)
-    : model_(model), tokenizer_(tokenizer), sampler_(seed),
-      kv_cache_(model.config().max_seq_len, model.config().n_layers,
-                model.config().n_kv_heads > 0 ? model.config().n_kv_heads : model.config().n_heads,
+Engine::Engine(Model& model, Tokenizer& tokenizer)
+    : model_(model), tokenizer_(tokenizer),
+      kv_cache_(model.config().max_seq_len, model.config().n_layers, model.config().n_heads,
                 model.config().head_dim()) {}
 
-TokenId Engine::pick_next_token(const Tensor& logits, const GenerationConfig& config) {
+TokenId Engine::pick_next_token(ggml_tensor* logits, const GenerationConfig& config) {
+    const float* data = static_cast<const float*>(logits->data);
+    std::size_t vocab_size = static_cast<std::size_t>(logits->ne[0]);
+
     if (config.temperature <= 0.0f) {
-        return sampler_.argmax(logits);
+        return sampler_.argmax(data, vocab_size);
+    }
+    if (config.top_p < 1.0f) {
+        return sampler_.sample_top_p(data, vocab_size, config.top_p, config.temperature);
     }
     if (config.top_k > 0) {
-        return sampler_.sample_top_k(logits, config.top_k, config.temperature);
+        return sampler_.sample_top_k(data, vocab_size, config.top_k, config.temperature);
     }
-    if (config.top_p > 0.0f) {
-        return sampler_.sample_top_p(logits, config.top_p, config.temperature);
-    }
-    return sampler_.sample(logits, config.temperature);
+    return sampler_.sample(data, vocab_size, config.temperature);
 }
 
-std::vector<TokenId> Engine::generate(const std::vector<TokenId>& prompt,
-                                      const GenerationConfig& config,
-                                      const TokenCallback& on_token) {
-    if (prompt.empty()) {
-        throw std::runtime_error("prompt cannot be empty");
-    }
-
-    reset();
-
-    const int64_t capacity = kv_cache_.capacity();
-    if (static_cast<int64_t>(prompt.size()) > capacity) {
-        throw std::runtime_error("prompt length exceeds model's max sequence length");
-    }
-
-    Tensor logits;
-    int64_t pos = 0;
-
-    // Prefill: run every prompt token, keeping only the final logits.
-    for (TokenId token : prompt) {
-        logits = model_.forward(token, pos, kv_cache_);
-        ++pos;
-    }
-
-    std::vector<TokenId> generated; // NOTE: only the new tokens, not the prompt
-    generated.reserve(static_cast<std::size_t>(config.max_new_tokens));
-
-    for (int32_t i = 0; i < config.max_new_tokens; ++i) {
-        TokenId next_token = pick_next_token(logits, config);
-        if (config.eos_token >= 0 && next_token == config.eos_token)
-            break;
-
-        generated.push_back(next_token);
-        if (on_token)
-            on_token(next_token, tokenizer_.decode(next_token));
-
-        if (pos >= capacity)
-            break;
-        logits = model_.forward(next_token, pos, kv_cache_);
-        ++pos;
-    }
-
-    return generated;
-}
-
-std::string Engine::generate_text(const std::string& prompt, const GenerationConfig& config,
-                                  const TokenCallback& on_token) {
+void Engine::generate_text(const std::string& prompt, const GenerationConfig& config,
+                           const TextPieceCallback& callback) {
     auto prompt_tokens = tokenizer_.encode(prompt);
-    auto output_tokens = generate(prompt_tokens, config, on_token);
-    return tokenizer_.decode(output_tokens);
-}
+    if (prompt_tokens.empty())
+        return;
 
-void Engine::reset() {
-    kv_cache_.clear();
+    int64_t pos = static_cast<int64_t>(kv_cache_.size());
+    ggml_tensor* logits = nullptr;
+
+    for (size_t i = 0; i < prompt_tokens.size(); ++i) {
+        logits = model_.forward(prompt_tokens[i], pos, kv_cache_.k_cache(), kv_cache_.v_cache());
+        if (i < prompt_tokens.size() - 1) {
+            kv_cache_.increment_sequence();
+            pos++;
+        }
+    }
+
+    TokenId next_token = pick_next_token(logits, config);
+    if (callback)
+        callback(next_token, tokenizer_.decode(next_token));
+
+    int32_t tokens_produced = 1;
+    while (kv_cache_.size() < kv_cache_.capacity() - 1 && tokens_produced < config.max_new_tokens) {
+        kv_cache_.increment_sequence();
+        pos++;
+
+        logits = model_.forward(next_token, pos, kv_cache_.k_cache(), kv_cache_.v_cache());
+        next_token = pick_next_token(logits, config);
+        tokens_produced++;
+
+        if (callback)
+            callback(next_token, tokenizer_.decode(next_token));
+            
+        if (next_token == 2)
+            break;
+    }
 }
 
 } // namespace llmengine

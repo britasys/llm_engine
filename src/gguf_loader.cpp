@@ -1,348 +1,360 @@
 #include "llmengine/gguf_loader.hpp"
-
 #include <cstring>
-#include <iostream>
-#include <iterator>
+#include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace llmengine {
 
 namespace {
+constexpr uint32_t GGUF_MAGIC = 0x46554747;
+constexpr uint64_t MAX_STRING_LEN = 1ull << 24;
+constexpr uint64_t MAX_ARRAY_LEN = 1ull << 24;
+constexpr uint64_t MAX_TENSOR_COUNT = 1ull << 20;
+constexpr uint64_t MAX_METADATA_COUNT = 1ull << 20;
+constexpr uint32_t MAX_TENSOR_DIMS = 8;
 
-constexpr uint32_t GGUF_MAGIC = 0x46554747; // "GGUF"
+bool mul_overflow(uint64_t a, uint64_t b, uint64_t& out) {
+    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a)
+        return true;
+    out = a * b;
+    return false;
+}
+
+bool add_overflow(uint64_t a, uint64_t b, uint64_t& out) {
+    if (b > std::numeric_limits<uint64_t>::max() - a)
+        return true;
+    out = a + b;
+    return false;
+}
 
 } // namespace
 
-template<typename T> T GGUFLoader::read(std::istream& in) {
-    T value{};
-    in.read(reinterpret_cast<char*>(&value), sizeof(T));
-
-    if (!in) {
-        throw std::runtime_error("GGUF: unexpected EOF");
-    }
-
-    return value;
+void GGUFLoader::ensure_remaining(std::istream& in, uint64_t n) {
+    auto cur = in.tellg();
+    if (cur < 0)
+        throw std::runtime_error("invalid stream position");
+    uint64_t pos = static_cast<uint64_t>(cur);
+    if (pos > file_data_.size() || n > file_data_.size() - pos)
+        throw std::runtime_error("unexpected end of gguf file");
 }
 
 std::string GGUFLoader::read_string(std::istream& in) {
-    const auto len = read<uint64_t>(in);
-
-    std::string str(len, '\0');
-    in.read(str.data(), static_cast<std::streamsize>(len));
-
-    if (!in) {
-        throw std::runtime_error("GGUF: failed reading string");
-    }
-
-    return str;
+    uint64_t len = read<uint64_t>(in);
+    if (len > MAX_STRING_LEN)
+        throw std::runtime_error("gguf string length exceeds limit");
+    ensure_remaining(in, len);
+    std::string s(len, '\0');
+    if (len > 0)
+        in.read(s.data(), static_cast<std::streamsize>(len));
+    if (!in)
+        throw std::runtime_error("failed to read string from gguf file");
+    return s;
 }
 
-std::string GGUFLoader::read_array_as_string(std::istream& in) {
-    auto elem_type = static_cast<GGUFValueType>(read<uint32_t>(in));
-    uint64_t count = read<uint64_t>(in);
-
+std::string GGUFLoader::read_array_as_string(std::istream& in, uint32_t elem_type) {
+    uint64_t n = read<uint64_t>(in);
+    if (n > MAX_ARRAY_LEN)
+        throw std::runtime_error("gguf array length exceeds limit");
     std::string out = "[";
-    for (uint64_t i = 0; i < count; ++i) {
-        if (i > 0)
+    for (uint64_t i = 0; i < n; i++) {
+        if (i)
             out += ",";
-
         switch (elem_type) {
-        case GGUFValueType::UINT8:
+        case 0:
             out += std::to_string(read<uint8_t>(in));
             break;
-
-        case GGUFValueType::INT8:
+        case 1:
             out += std::to_string(read<int8_t>(in));
             break;
-
-        case GGUFValueType::UINT16:
+        case 2:
             out += std::to_string(read<uint16_t>(in));
             break;
-
-        case GGUFValueType::INT16:
+        case 3:
             out += std::to_string(read<int16_t>(in));
             break;
-
-        case GGUFValueType::UINT32:
+        case 4:
             out += std::to_string(read<uint32_t>(in));
             break;
-
-        case GGUFValueType::INT32:
+        case 5:
             out += std::to_string(read<int32_t>(in));
             break;
-
-        case GGUFValueType::UINT64:
-            out += std::to_string(read<uint64_t>(in));
-            break;
-
-        case GGUFValueType::INT64:
-            out += std::to_string(read<int64_t>(in));
-            break;
-
-        case GGUFValueType::FLOAT32:
+        case 6:
             out += std::to_string(read<float>(in));
             break;
-
-        case GGUFValueType::FLOAT64:
-            out += std::to_string(read<double>(in));
-            break;
-
-        case GGUFValueType::BOOL:
+        case 7:
             out += read<uint8_t>(in) ? "true" : "false";
             break;
-
-        case GGUFValueType::STRING:
+        case 8:
             out += "\"" + read_string(in) + "\"";
             break;
-
-        case GGUFValueType::ARRAY:
-            out += read_array_as_string(in);
+        case 10:
+            out += std::to_string(read<uint64_t>(in));
             break;
-
+        case 11:
+            out += std::to_string(read<int64_t>(in));
+            break;
+        case 12:
+            out += std::to_string(read<double>(in));
+            break;
         default:
-            throw std::runtime_error("Unsupported GGUF array element type");
+            throw std::runtime_error("unsupported array element type");
         }
     }
     out += "]";
     return out;
 }
 
-DType GGUFLoader::gguf_type_to_dtype(uint32_t type) {
-    switch (type) {
-
+ggml_type GGUFLoader::gguf_type_to_ggml(uint32_t t) {
+    switch (t) {
     case 0:
-        return DType::F32;
-
+        return GGML_TYPE_F32;
     case 1:
-        return DType::F16;
-
+        return GGML_TYPE_F16;
     case 2:
-        return DType::Q4_0;
-
+        return GGML_TYPE_Q4_0;
     case 3:
-        return DType::Q4_1;
-
+        return GGML_TYPE_Q4_1;
     case 6:
-        return DType::Q5_0;
-
+        return GGML_TYPE_Q5_0;
     case 7:
-        return DType::Q5_1;
-
+        return GGML_TYPE_Q5_1;
     case 8:
-        return DType::Q8_0;
-
-    case 9:
-        return DType::Q8_1;
-
+        return GGML_TYPE_Q8_0;
     case 10:
-        return DType::Q2_K;
-
+        return GGML_TYPE_Q2_K;
     case 11:
-        return DType::Q3_K;
-
+        return GGML_TYPE_Q3_K;
     case 12:
-        return DType::Q4_K;
-
+        return GGML_TYPE_Q4_K;
     case 13:
-        return DType::Q5_K;
-
+        return GGML_TYPE_Q5_K;
     case 14:
-        return DType::Q6_K;
-
+        return GGML_TYPE_Q6_K;
     case 15:
-        return DType::Q8_K;
-
-    case 16:
-        return DType::IQ2_XXS;
-
-    case 17:
-        return DType::IQ2_XS;
-
-    case 18:
-        return DType::IQ3_XXS;
-
-    case 19:
-        return DType::IQ1_S;
-
-    case 20:
-        return DType::IQ4_NL;
-
-    case 21:
-        return DType::IQ3_S;
-
-    case 22:
-        return DType::IQ2_S;
-
-    case 23:
-        return DType::IQ4_XS;
-
-    case 29:
-        return DType::IQ1_M;
-
+        return GGML_TYPE_Q8_K;
     default:
-        throw std::runtime_error("Unsupported GGUF tensor type: " + std::to_string(type));
+        throw std::runtime_error("unsupported GGUF type");
     }
 }
 
 GGUFLoader::GGUFLoader(const std::filesystem::path& path) : path_(path) {}
 
 void GGUFLoader::load() {
-    std::ifstream file(path_, std::ios::binary);
+    std::ifstream f;
+    f.open(path_, std::ios::binary | std::ios::in | std::ios::ate);
+    if (!f)
+        throw std::runtime_error("failed to open gguf file: " + path_.string());
 
-    if (!file) {
-        throw std::runtime_error("Failed to open GGUF file");
-    }
+    auto tell = f.tellg();
+    if (tell < 0)
+        throw std::runtime_error("failed to determine gguf file size: " + path_.string());
+    size_t size = static_cast<size_t>(tell);
+    f.seekg(0, std::ios::beg);
+    if (!f)
+        throw std::runtime_error("failed to seek gguf file: " + path_.string());
 
-    const auto magic = read<uint32_t>(file);
-    if (magic != GGUF_MAGIC) {
-        throw std::runtime_error("Invalid GGUF magic");
-    }
+    if (size < 24)
+        throw std::runtime_error("gguf file too small: " + path_.string());
 
-    version_ = read<uint32_t>(file);
-    tensor_count_ = read<uint64_t>(file);
-    metadata_count_ = read<uint64_t>(file);
+    file_data_.resize(size);
+    f.read(reinterpret_cast<char*>(file_data_.data()), static_cast<std::streamsize>(size));
+    if (!f)
+        throw std::runtime_error("failed to read gguf file: " + path_.string());
+    f.close();
 
-    for (uint64_t i = 0; i < metadata_count_; ++i) {
-        const auto key = read_string(file);
-        const auto type = static_cast<GGUFValueType>(read<uint32_t>(file));
+    struct VectorBuffer : std::streambuf {
+        VectorBuffer(uint8_t* base, size_t size) {
+            char* p = reinterpret_cast<char*>(base);
+            setg(p, p, p + size);
+        }
 
+        pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override {
+            if (!(which & std::ios_base::in))
+                return pos_type(off_type(-1));
+
+            char* base = eback();
+            char* cur = gptr();
+            char* end = egptr();
+            off_type new_off;
+
+            switch (dir) {
+            case std::ios_base::beg:
+                new_off = off;
+                break;
+            case std::ios_base::cur:
+                new_off = (cur - base) + off;
+                break;
+            case std::ios_base::end:
+                new_off = (end - base) + off;
+                break;
+            default:
+                return pos_type(off_type(-1));
+            }
+
+            if (new_off < 0 || new_off > (end - base))
+                return pos_type(off_type(-1));
+
+            setg(base, base + new_off, end);
+            return pos_type(new_off);
+        }
+
+        pos_type seekpos(pos_type pos, std::ios_base::openmode which) override { return seekoff(off_type(pos), std::ios_base::beg, which); }
+    };
+    VectorBuffer buf(file_data_.data(), file_data_.size());
+    std::istream stream(&buf);
+
+    if (read<uint32_t>(stream) != GGUF_MAGIC)
+        throw std::runtime_error("invalid magic");
+    version_ = read<uint32_t>(stream);
+    tensor_count_ = read<uint64_t>(stream);
+    metadata_count_ = read<uint64_t>(stream);
+
+    if (tensor_count_ > MAX_TENSOR_COUNT)
+        throw std::runtime_error("gguf tensor count exceeds limit");
+    if (metadata_count_ > MAX_METADATA_COUNT)
+        throw std::runtime_error("gguf metadata count exceeds limit");
+
+    for (uint64_t i = 0; i < metadata_count_; i++) {
+        std::string key = read_string(stream);
+        uint32_t type = read<uint32_t>(stream);
         switch (type) {
-        case GGUFValueType::STRING:
-            metadata_[key] = read_string(file);
+        case 0:
+            metadata_[key] = std::to_string(read<uint8_t>(stream));
             break;
-
-        case GGUFValueType::ARRAY:
-            metadata_[key] = read_array_as_string(file);
+        case 1:
+            metadata_[key] = std::to_string(read<int8_t>(stream));
             break;
-
-        case GGUFValueType::UINT8:
-            metadata_[key] = std::to_string(read<uint8_t>(file));
+        case 2:
+            metadata_[key] = std::to_string(read<uint16_t>(stream));
             break;
-
-        case GGUFValueType::INT8:
-            metadata_[key] = std::to_string(read<int8_t>(file));
+        case 3:
+            metadata_[key] = std::to_string(read<int16_t>(stream));
             break;
-
-        case GGUFValueType::UINT16:
-            metadata_[key] = std::to_string(read<uint16_t>(file));
+        case 4:
+            metadata_[key] = std::to_string(read<uint32_t>(stream));
             break;
-
-        case GGUFValueType::INT16:
-            metadata_[key] = std::to_string(read<int16_t>(file));
+        case 5:
+            metadata_[key] = std::to_string(read<int32_t>(stream));
             break;
-
-        case GGUFValueType::UINT32:
-            metadata_[key] = std::to_string(read<uint32_t>(file));
+        case 6:
+            metadata_[key] = std::to_string(read<float>(stream));
             break;
-
-        case GGUFValueType::INT32:
-            metadata_[key] = std::to_string(read<int32_t>(file));
+        case 7:
+            metadata_[key] = read<uint8_t>(stream) ? "true" : "false";
             break;
-
-        case GGUFValueType::UINT64:
-            metadata_[key] = std::to_string(read<uint64_t>(file));
+        case 8:
+            metadata_[key] = read_string(stream);
             break;
-
-        case GGUFValueType::INT64:
-            metadata_[key] = std::to_string(read<int64_t>(file));
+        case 9:
+            metadata_[key] = read_array_as_string(stream, read<uint32_t>(stream));
             break;
-
-        case GGUFValueType::FLOAT32:
-            metadata_[key] = std::to_string(read<float>(file));
+        case 10:
+            metadata_[key] = std::to_string(read<uint64_t>(stream));
             break;
-
-        case GGUFValueType::FLOAT64:
-            metadata_[key] = std::to_string(read<double>(file));
+        case 11:
+            metadata_[key] = std::to_string(read<int64_t>(stream));
             break;
-
-        case GGUFValueType::BOOL:
-            metadata_[key] = read<uint8_t>(file) ? "true" : "false";
+        case 12:
+            metadata_[key] = std::to_string(read<double>(stream));
             break;
-
         default:
-            throw std::runtime_error("Unsupported GGUF metadata type");
+            throw std::runtime_error("unsupported metadata type");
         }
     }
 
-    for (uint64_t i = 0; i < tensor_count_; ++i) {
+    for (uint64_t i = 0; i < tensor_count_; i++) {
         GGUFTensorInfo info;
+        info.name = read_string(stream);
+        if (tensors_.find(info.name) != tensors_.end())
+            throw std::runtime_error("duplicate tensor name in gguf file: " + info.name);
 
-        info.name = read_string(file);
-        const auto ndim = read<uint32_t>(file);
+        uint32_t ndim = read<uint32_t>(stream);
+        if (ndim > MAX_TENSOR_DIMS)
+            throw std::runtime_error("tensor has too many dimensions: " + info.name);
+
         info.shape.resize(ndim);
-
-        for (uint32_t d = 0; d < ndim; ++d) {
-            info.shape[d] = static_cast<int64_t>(read<uint64_t>(file));
+        uint64_t element_count = 1;
+        for (uint32_t d = 0; d < ndim; d++) {
+            uint64_t dim = read<uint64_t>(stream);
+            if (dim > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+                throw std::runtime_error("tensor dimension out of range: " + info.name);
+            info.shape[d] = static_cast<int64_t>(dim);
+            uint64_t next;
+            if (mul_overflow(element_count, dim == 0 ? 1 : dim, next))
+                throw std::runtime_error("tensor element count overflow: " + info.name);
+            element_count = next;
         }
 
-        const auto gguf_type = read<uint32_t>(file);
-        info.dtype = gguf_type_to_dtype(gguf_type);
+        uint32_t type = read<uint32_t>(stream);
+        info.dtype = gguf_type_to_ggml(type);
+        info.offset = read<uint64_t>(stream);
 
-        info.offset = read<uint64_t>(file);
+        int64_t blck_size = ggml_blck_size(info.dtype);
+        size_t type_size = ggml_type_size(info.dtype);
+        if (blck_size <= 0)
+            throw std::runtime_error("invalid block size for tensor: " + info.name);
+        if (element_count % static_cast<uint64_t>(blck_size) != 0)
+            throw std::runtime_error("tensor element count not divisible by block size: " + info.name);
+
+        uint64_t num_blocks = element_count / static_cast<uint64_t>(blck_size);
+        uint64_t byte_size;
+        if (mul_overflow(num_blocks, static_cast<uint64_t>(type_size), byte_size))
+            throw std::runtime_error("tensor byte size overflow: " + info.name);
+        info.nbytes = byte_size;
 
         tensors_.emplace(info.name, std::move(info));
     }
 
-    // 1. Calculate the proper alignment offset right where the stream leaves off
     uint64_t alignment = 32;
-    auto it = metadata_.find("general.alignment");
-    if (it != metadata_.end()) {
-        alignment = std::stoull(it->second);
+    if (auto it = metadata_.find("general.alignment"); it != metadata_.end()) {
+        uint64_t parsed;
+        try {
+            parsed = std::stoull(it->second);
+        } catch (const std::exception&) {
+            throw std::runtime_error("invalid general.alignment value in gguf file");
+        }
+        if (parsed == 0 || (parsed & (parsed - 1)) != 0)
+            throw std::runtime_error("general.alignment must be a nonzero power of two");
+        alignment = parsed;
     }
 
-    uint64_t pos = static_cast<uint64_t>(file.tellg());
-    tensor_data_offset_ = (pos + alignment - 1) & ~(alignment - 1);
+    auto cur = stream.tellg();
+    if (cur < 0)
+        throw std::runtime_error("invalid stream position computing tensor data offset");
+    uint64_t header_end = static_cast<uint64_t>(cur);
 
-    file.seekg(0, std::ios::end);
+    uint64_t padded;
+    if (add_overflow(header_end, alignment - 1, padded))
+        throw std::runtime_error("tensor data offset overflow");
+    tensor_data_offset_ = padded & ~(alignment - 1);
 
-    const auto size = file.tellg();
+    if (tensor_data_offset_ > file_data_.size())
+        throw std::runtime_error("tensor data offset exceeds file size");
 
-    file_data_.resize(static_cast<size_t>(size));
-
-    file.seekg(0, std::ios::beg);
-
-    file.read(reinterpret_cast<char*>(file_data_.data()),
-              static_cast<std::streamsize>(file_data_.size()));
-
-    if (!file) {
-        throw std::runtime_error("Failed reading GGUF file");
+    for (const auto& [name, info] : tensors_) {
+        uint64_t end;
+        if (add_overflow(tensor_data_offset_, info.offset, end) || add_overflow(end, info.nbytes, end))
+            throw std::runtime_error("tensor data range overflow: " + name);
+        if (end > file_data_.size())
+            throw std::runtime_error("tensor data out of bounds: " + name);
     }
-}
-
-uint32_t GGUFLoader::version() const noexcept {
-    return version_;
-}
-
-uint64_t GGUFLoader::tensor_count() const noexcept {
-    return tensor_count_;
-}
-
-uint64_t GGUFLoader::metadata_count() const noexcept {
-    return metadata_count_;
 }
 
 bool GGUFLoader::has_tensor(const std::string& name) const {
-    return tensors_.contains(name);
+    return tensors_.find(name) != tensors_.end();
 }
 
 const GGUFTensorInfo& GGUFLoader::tensor_info(const std::string& name) const {
     return tensors_.at(name);
 }
 
-const std::unordered_map<std::string, GGUFTensorInfo>& GGUFLoader::tensors() const noexcept {
-    return tensors_;
-}
-
-Tensor GGUFLoader::tensor(const std::string& name) {
-    const auto& info = tensors_.at(name);
-
-    uint8_t* ptr = file_data_.data() + tensor_data_offset_ + info.offset;
-
-    return Tensor::view(const_cast<uint8_t*>(ptr), info.shape, info.dtype);
-}
-
-const std::unordered_map<std::string, std::string>& GGUFLoader::metadata() const noexcept {
-    return metadata_;
+const void* GGUFLoader::tensor_data(const std::string& name) const {
+    const auto& t = tensors_.at(name);
+    uint64_t start;
+    if (add_overflow(tensor_data_offset_, t.offset, start) || start > file_data_.size() || t.nbytes > file_data_.size() - start)
+        throw std::runtime_error("tensor data out of bounds: " + name);
+    return file_data_.data() + start;
 }
 
 } // namespace llmengine

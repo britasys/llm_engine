@@ -8,10 +8,6 @@ namespace llmengine {
 
 namespace {
 
-// Parses one array element starting at `pos` in a string produced by
-// read_array_as_string() (format: [elem,elem,...] where string elements
-// are wrapped in double quotes). Returns the unquoted piece text and
-// advances `pos` past the trailing comma or closing bracket.
 std::string parse_next_element(const std::string& s, std::size_t& pos) {
     if (pos >= s.size())
         return "";
