@@ -27,7 +27,7 @@ struct ModelConfig {
 
     [[nodiscard]] int64_t head_dim() const noexcept { return n_heads > 0 ? n_embd / n_heads : 0; }
     [[nodiscard]] static ModelConfig
-    from_metadata(const std::unordered_map<std::string, std::string>& meta);
+    from_metadata(const GGUFLoader& loader);
 };
 
 struct LayerWeights {

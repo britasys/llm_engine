@@ -48,33 +48,33 @@ int main(int argc, char** argv) {
         std::cout << "metadata      : " << loader.metadata_count() << "\n\n";
         std::cout << "Metadata:\n";
 
-        for (const auto& [key, value] : loader.metadata()) {
-            std::cout << "  " << key << '\n';
-        }
+        // for (const auto& [key, value] : loader.metadata()) {
+        //     std::cout << "  " << key << '\n';
+        // }
 
-        std::cout << "\nFirst tensors:\n";
+        // std::cout << "\nFirst tensors:\n";
 
-        int count = 0;
+        // int count = 0;
 
-        for (const auto& [name, info] : loader.tensors()) {
-            std::cout << "  " << name << '\n';
+        // for (const auto& [name, info] : loader.tensors()) {
+        //     std::cout << "  " << name << '\n';
 
-            std::cout << "    shape: ";
+        //     std::cout << "    shape: ";
 
-            for (auto dim : info.shape) {
-                std::cout << dim << " ";
-            }
+        //     for (auto dim : info.shape) {
+        //         std::cout << dim << " ";
+        //     }
 
-            std::cout << '\n';
+        //     std::cout << '\n';
 
-            std::cout << "    dtype: " << static_cast<int>(info.dtype) << '\n';
+        //     std::cout << "    dtype: " << static_cast<int>(info.dtype) << '\n';
 
-            std::cout << "    offset: " << info.offset << '\n';
-            std::cout << "    nbytes: " << info.nbytes << "\n\n";
+        //     std::cout << "    offset: " << info.offset << '\n';
+        //     std::cout << "    nbytes: " << info.nbytes << "\n\n";
 
-            if (++count == 10)
-                break;
-        }
+        //     if (++count == 10)
+        //         break;
+        // }
 
         std::cout << "Loading model...\n";
 

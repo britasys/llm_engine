@@ -3,6 +3,7 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace llmengine {
 
@@ -50,59 +51,6 @@ std::string GGUFLoader::read_string(std::istream& in) {
     if (!in)
         throw std::runtime_error("failed to read string from gguf file");
     return s;
-}
-
-std::string GGUFLoader::read_array_as_string(std::istream& in, uint32_t elem_type) {
-    uint64_t n = read<uint64_t>(in);
-    if (n > MAX_ARRAY_LEN)
-        throw std::runtime_error("gguf array length exceeds limit");
-    std::string out = "[";
-    for (uint64_t i = 0; i < n; i++) {
-        if (i)
-            out += ",";
-        switch (elem_type) {
-        case 0:
-            out += std::to_string(read<uint8_t>(in));
-            break;
-        case 1:
-            out += std::to_string(read<int8_t>(in));
-            break;
-        case 2:
-            out += std::to_string(read<uint16_t>(in));
-            break;
-        case 3:
-            out += std::to_string(read<int16_t>(in));
-            break;
-        case 4:
-            out += std::to_string(read<uint32_t>(in));
-            break;
-        case 5:
-            out += std::to_string(read<int32_t>(in));
-            break;
-        case 6:
-            out += std::to_string(read<float>(in));
-            break;
-        case 7:
-            out += read<uint8_t>(in) ? "true" : "false";
-            break;
-        case 8:
-            out += "\"" + read_string(in) + "\"";
-            break;
-        case 10:
-            out += std::to_string(read<uint64_t>(in));
-            break;
-        case 11:
-            out += std::to_string(read<int64_t>(in));
-            break;
-        case 12:
-            out += std::to_string(read<double>(in));
-            break;
-        default:
-            throw std::runtime_error("unsupported array element type");
-        }
-    }
-    out += "]";
-    return out;
 }
 
 ggml_type GGUFLoader::gguf_type_to_ggml(uint32_t t) {
@@ -218,46 +166,116 @@ void GGUFLoader::load() {
     for (uint64_t i = 0; i < metadata_count_; i++) {
         std::string key = read_string(stream);
         uint32_t type = read<uint32_t>(stream);
+
         switch (type) {
         case 0:
-            metadata_[key] = std::to_string(read<uint8_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(read<uint8_t>(stream));
             break;
+
         case 1:
-            metadata_[key] = std::to_string(read<int8_t>(stream));
+            metadata_[key] = static_cast<int64_t>(read<int8_t>(stream));
             break;
+
         case 2:
-            metadata_[key] = std::to_string(read<uint16_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(read<uint16_t>(stream));
             break;
+
         case 3:
-            metadata_[key] = std::to_string(read<int16_t>(stream));
+            metadata_[key] = static_cast<int64_t>(read<int16_t>(stream));
             break;
+
         case 4:
-            metadata_[key] = std::to_string(read<uint32_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(read<uint32_t>(stream));
             break;
+
         case 5:
-            metadata_[key] = std::to_string(read<int32_t>(stream));
+            metadata_[key] = static_cast<int64_t>(read<int32_t>(stream));
             break;
+
         case 6:
-            metadata_[key] = std::to_string(read<float>(stream));
+            metadata_[key] = read<float>(stream);
             break;
+
         case 7:
-            metadata_[key] = read<uint8_t>(stream) ? "true" : "false";
+            metadata_[key] = read<uint8_t>(stream) != 0;
             break;
+
         case 8:
             metadata_[key] = read_string(stream);
             break;
-        case 9:
-            metadata_[key] = read_array_as_string(stream, read<uint32_t>(stream));
+
+        case 9: {
+            uint32_t array_type = read<uint32_t>(stream);
+            uint64_t len = read<uint64_t>(stream);
+
+            if (len > MAX_ARRAY_LEN)
+                throw std::runtime_error("gguf array too large");
+
+            auto arr = std::make_shared<MetadataArray>();
+
+            arr->values.reserve(static_cast<size_t>(len));
+
+            for (uint64_t j = 0; j < len; ++j) {
+
+                switch (array_type) {
+
+                case 0:
+                    arr->values.push_back(static_cast<uint64_t>(read<uint8_t>(stream)));
+                    break;
+
+                case 1:
+                    arr->values.push_back(static_cast<int64_t>(read<int8_t>(stream)));
+                    break;
+
+                case 2:
+                    arr->values.push_back(static_cast<uint64_t>(read<uint16_t>(stream)));
+                    break;
+
+                case 3:
+                    arr->values.push_back(static_cast<int64_t>(read<int16_t>(stream)));
+                    break;
+
+                case 4:
+                    arr->values.push_back(static_cast<uint64_t>(read<uint32_t>(stream)));
+                    break;
+
+                case 5:
+                    arr->values.push_back(static_cast<int64_t>(read<int32_t>(stream)));
+                    break;
+
+                case 6:
+                    arr->values.push_back(read<float>(stream));
+                    break;
+
+                case 7:
+                    arr->values.push_back(read<uint8_t>(stream) != 0);
+                    break;
+
+                case 8:
+                    arr->values.push_back(read_string(stream));
+                    break;
+
+                default:
+                    throw std::runtime_error("unsupported array type");
+                }
+            }
+
+            metadata_[key] = arr;
             break;
+        }
+
         case 10:
-            metadata_[key] = std::to_string(read<uint64_t>(stream));
+            metadata_[key] = read<uint64_t>(stream);
             break;
+
         case 11:
-            metadata_[key] = std::to_string(read<int64_t>(stream));
+            metadata_[key] = read<int64_t>(stream);
             break;
+
         case 12:
-            metadata_[key] = std::to_string(read<double>(stream));
+            metadata_[key] = static_cast<float>(read<double>(stream));
             break;
+
         default:
             throw std::runtime_error("unsupported metadata type");
         }
@@ -307,15 +325,21 @@ void GGUFLoader::load() {
     }
 
     uint64_t alignment = 32;
-    if (auto it = metadata_.find("general.alignment"); it != metadata_.end()) {
-        uint64_t parsed;
+
+    auto it = metadata_.find("general.alignment");
+
+    if (it != metadata_.end()) {
+        uint64_t parsed = 0;
+
         try {
-            parsed = std::stoull(it->second);
+            parsed = std::stoull(std::get<std::string>(it->second));
         } catch (const std::exception&) {
             throw std::runtime_error("invalid general.alignment value in gguf file");
         }
+
         if (parsed == 0 || (parsed & (parsed - 1)) != 0)
             throw std::runtime_error("general.alignment must be a nonzero power of two");
+
         alignment = parsed;
     }
 
@@ -355,6 +379,85 @@ const void* GGUFLoader::tensor_data(const std::string& name) const {
     if (add_overflow(tensor_data_offset_, t.offset, start) || start > file_data_.size() || t.nbytes > file_data_.size() - start)
         throw std::runtime_error("tensor data out of bounds: " + name);
     return file_data_.data() + start;
+}
+
+const MetadataArray& GGUFLoader::get_meta_array(std::string_view key) const {
+    auto it = metadata_.find(std::string(key));
+
+    if (it == metadata_.end())
+        throw std::runtime_error("missing metadata");
+
+    if (!std::holds_alternative<std::shared_ptr<MetadataArray>>(it->second))
+        throw std::runtime_error("metadata is not array");
+
+    const auto& array = std::get<std::shared_ptr<MetadataArray>>(it->second);
+
+    if (!array)
+        throw std::runtime_error("null metadata array");
+
+    return *array;
+}
+
+std::string GGUFLoader::get_meta_string(std::string_view key) const {
+    auto it = metadata_.find(std::string(key));
+
+    if (it == metadata_.end())
+        throw std::runtime_error("missing metadata");
+
+    const auto& value = it->second;
+
+    if (std::holds_alternative<std::string>(value))
+        return std::get<std::string>(value);
+
+    if (std::holds_alternative<uint64_t>(value))
+        return std::to_string(std::get<uint64_t>(value));
+
+    if (std::holds_alternative<int64_t>(value))
+        return std::to_string(std::get<int64_t>(value));
+
+    if (std::holds_alternative<float>(value))
+        return std::to_string(std::get<float>(value));
+
+    if (std::holds_alternative<bool>(value))
+        return std::get<bool>(value) ? "true" : "false";
+
+    if (std::holds_alternative<std::shared_ptr<MetadataArray>>(value))
+        return "[array]";
+
+    throw std::runtime_error("unsupported metadata type");
+}
+
+int64_t GGUFLoader::get_meta_int(std::string_view key) const {
+    auto it = metadata_.find(std::string(key));
+
+    if (it == metadata_.end())
+        throw std::runtime_error("missing metadata: " + std::string(key));
+
+    if (std::holds_alternative<int64_t>(it->second))
+        return std::get<int64_t>(it->second);
+
+    if (std::holds_alternative<uint64_t>(it->second))
+        return static_cast<int64_t>(std::get<uint64_t>(it->second));
+
+    throw std::runtime_error("metadata is not integer: " + std::string(key));
+}
+
+float GGUFLoader::get_meta_float(std::string_view key) const {
+    auto it = metadata_.find(std::string(key));
+
+    if (it == metadata_.end())
+        throw std::runtime_error("missing metadata: " + std::string(key));
+
+    if (std::holds_alternative<float>(it->second))
+        return std::get<float>(it->second);
+
+    if (std::holds_alternative<int64_t>(it->second))
+        return static_cast<float>(std::get<int64_t>(it->second));
+
+    if (std::holds_alternative<uint64_t>(it->second))
+        return static_cast<float>(std::get<uint64_t>(it->second));
+
+    throw std::runtime_error("metadata is not float: " + std::string(key));
 }
 
 } // namespace llmengine

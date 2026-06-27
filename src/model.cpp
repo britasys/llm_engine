@@ -32,53 +32,13 @@ std::size_t calculate_scratch_size(const ModelConfig& config) {
     return 128ULL * 1024ULL * 1024ULL;
 }
 
-int64_t get_meta_int(const std::unordered_map<std::string, std::string>& meta, const std::string& key, int64_t default_val) {
-    auto it = meta.find(key);
-    if (it == meta.end() || it->second.empty())
-        return default_val;
+int64_t count_tokenizer_vocab(const GGUFLoader& loader) {
     try {
-        return std::stoll(it->second);
-    } catch (...) {
-        return default_val;
-    }
-}
+        const auto& tokens = loader.get_meta_array("tokenizer.ggml.tokens");
 
-int64_t count_tokenizer_vocab(const std::unordered_map<std::string, std::string>& meta) {
-    auto it = meta.find("tokenizer.ggml.tokens");
-    if (it == meta.end() || it->second.size() < 2)
+        return static_cast<int64_t>(tokens.values.size());
+    } catch (const std::exception&) {
         return 0;
-    const std::string& s = it->second;
-    if (s.front() != '[' || s.back() != ']')
-        return 0;
-    if (s.size() == 2)
-        return 0;
-
-    int64_t count = 1;
-    bool in_string = false;
-    for (std::size_t i = 1; i + 1 < s.size(); ++i) {
-        char c = s[i];
-        if (c == '\\' && in_string) {
-            ++i;
-            continue;
-        }
-        if (c == '"') {
-            in_string = !in_string;
-            continue;
-        }
-        if (c == ',' && !in_string)
-            ++count;
-    }
-    return count;
-}
-
-float get_meta_float(const std::unordered_map<std::string, std::string>& meta, const std::string& key, float default_val) {
-    auto it = meta.find(key);
-    if (it == meta.end() || it->second.empty())
-        return default_val;
-    try {
-        return std::stof(it->second);
-    } catch (...) {
-        return default_val;
     }
 }
 
@@ -89,22 +49,25 @@ void inline_assign_i32(ggml_tensor* t, size_t index, int32_t val) {
 }
 } // namespace
 
-ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std::string>& meta) {
+ModelConfig ModelConfig::from_metadata(const GGUFLoader& loader) {
     ModelConfig c;
-    auto arch_it = meta.find("general.architecture");
-    std::string arch = (arch_it != meta.end()) ? arch_it->second : "llama";
 
-    c.vocab_size = get_meta_int(meta, arch + ".vocab_size", 0);
-    if (c.vocab_size <= 0)
-        c.vocab_size = count_tokenizer_vocab(meta);
-    c.n_embd = get_meta_int(meta, arch + ".embedding_length", 0);
-    c.n_layers = get_meta_int(meta, arch + ".block_count", 0);
-    c.n_heads = get_meta_int(meta, arch + ".attention.head_count", 0);
-    c.n_kv_heads = get_meta_int(meta, arch + ".attention.head_count_kv", c.n_heads);
-    c.n_ff = get_meta_int(meta, arch + ".feed_forward_length", 0);
-    c.max_seq_len = get_meta_int(meta, arch + ".context_length", 2048);
-    c.rope_theta = get_meta_float(meta, arch + ".rope.freq_base", 10000.0f);
-    c.rms_eps = get_meta_float(meta, arch + ".attention.layer_norm_rms_epsilon", 1e-5f);
+    std::string arch = loader.get_meta_string("general.architecture");
+
+    try {
+        c.vocab_size = loader.get_meta_int(arch + ".vocab_size");
+    } catch (...) {
+        c.vocab_size = count_tokenizer_vocab(loader);
+    }
+
+    c.n_embd = loader.get_meta_int(arch + ".embedding_length");
+    c.n_layers = loader.get_meta_int(arch + ".block_count");
+    c.n_heads = loader.get_meta_int(arch + ".attention.head_count");
+    c.n_kv_heads = loader.get_meta_int(arch + ".attention.head_count_kv");
+    c.n_ff = loader.get_meta_int(arch + ".feed_forward_length");
+    c.max_seq_len = loader.get_meta_int(arch + ".context_length");
+    c.rope_theta = loader.get_meta_float(arch + ".rope.freq_base");
+    c.rms_eps = loader.get_meta_float(arch + ".attention.layer_norm_rms_epsilon");
 
     if (c.vocab_size <= 0 || c.n_embd <= 0 || c.n_layers <= 0 || c.n_heads <= 0) {
         throw std::runtime_error("ModelConfig::from_metadata: architecture configuration missing.");
@@ -115,10 +78,11 @@ ModelConfig ModelConfig::from_metadata(const std::unordered_map<std::string, std
     if (c.n_embd % c.n_heads != 0) {
         throw std::runtime_error("ModelConfig::from_metadata: embedding_length not divisible by head_count.");
     }
+
     return c;
 }
 
-Model::Model(GGUFLoader& loader) : config_{ModelConfig::from_metadata(loader.metadata())}, scratch_arena_{calculate_scratch_size(config_)} {
+Model::Model(GGUFLoader& loader) : config_{ModelConfig::from_metadata(loader)}, scratch_arena_{calculate_scratch_size(config_)} {
     backend_ = ggml_backend_dev_init(ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr);
     if (!backend_)
         throw std::runtime_error("Failed to initialize CPU backend.");

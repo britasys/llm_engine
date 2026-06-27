@@ -35,7 +35,6 @@ FetchContent_Declare(
     GIT_TAG eced84c
     UPDATE_DISCONNECTED ON
 )
-
 FetchContent_MakeAvailable(ggml)
 
 # ---------------------------------------------------------------------------
@@ -43,13 +42,19 @@ FetchContent_MakeAvailable(ggml)
 # ---------------------------------------------------------------------------
 add_library(llmengine
     src/gguf_loader.cpp
-    src/tokenizer.cpp
     src/kv_cache.cpp
     src/sampler.cpp
     src/model.cpp
     src/engine.cpp
     src/rope_cache.cpp
     src/scratch_arena.cpp
+    src/tokenizer.cpp
+    src/tokenizer_bpe.cpp
+    src/tokenizer_decoder.cpp
+    src/tokenizer_sentencepiece.cpp
+    src/tokenizer_special.cpp
+    src/tokenizer_utf8.cpp
+    src/tokenizer_unigram.cpp
 )
 
 target_include_directories(llmengine PUBLIC
@@ -71,9 +76,7 @@ endif()
 
 # Threads for future parallel matmul work (std::thread / OpenMP-style fan-out)
 find_package(Threads REQUIRED)
-target_link_libraries(llmengine PUBLIC Threads::Threads)
-
-target_link_libraries(llmengine PUBLIC ggml)
+target_link_libraries(llmengine PUBLIC Threads::Threads ggml)
 
 # ---------------------------------------------------------------------------
 # Tests

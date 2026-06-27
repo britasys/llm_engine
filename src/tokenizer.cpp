@@ -1,112 +1,206 @@
 #include "llmengine/tokenizer.hpp"
 #include "llmengine/gguf_loader.hpp"
 
-#include <sstream>
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
+#include <string_view>
 
 namespace llmengine {
 
 namespace {
 
-std::string parse_next_element(const std::string& s, std::size_t& pos) {
-    if (pos >= s.size())
-        return "";
+void skip_whitespace(std::string_view s, std::size_t& pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) {
+        ++pos;
+    }
+}
 
-    if (s[pos] == '"') {
-        // Quoted string element: scan to the matching closing quote.
-        std::size_t start = pos + 1;
-        std::size_t end = s.find('"', start);
-        if (end == std::string::npos) {
-            throw std::runtime_error("malformed tokenizer.ggml.tokens: unterminated quoted string");
+char decode_escape(char c) {
+    switch (c) {
+    case '"':
+        return '"';
+    case '\\':
+        return '\\';
+    case '/':
+        return '/';
+    case 'b':
+        return '\b';
+    case 'f':
+        return '\f';
+    case 'n':
+        return '\n';
+    case 'r':
+        return '\r';
+    case 't':
+        return '\t';
+    default:
+        throw std::runtime_error("invalid escape sequence");
+    }
+}
+
+std::string parse_string(std::string_view s, std::size_t& pos) {
+    if (pos >= s.size() || s[pos] != '"')
+        throw std::runtime_error("expected string");
+
+    ++pos;
+
+    std::string out;
+
+    while (pos < s.size()) {
+        char c = s[pos++];
+
+        if (c == '"')
+            return out;
+
+        if (c == '\\') {
+            if (pos >= s.size())
+                throw std::runtime_error("unterminated escape sequence");
+
+            char esc = s[pos++];
+
+            if (esc == 'u')
+                throw std::runtime_error("\\u escapes are not implemented");
+
+            out.push_back(decode_escape(esc));
+            continue;
         }
-        std::string piece = s.substr(start, end - start);
-        pos = end + 1; // skip closing quote
-        // skip trailing ',' or ']'
-        if (pos < s.size() && (s[pos] == ',' || s[pos] == ']'))
+
+        out.push_back(c);
+    }
+
+    throw std::runtime_error("unterminated string");
+}
+
+std::vector<std::string> parse_string_array(std::string_view s) {
+    std::vector<std::string> result;
+
+    std::size_t pos = 0;
+
+    skip_whitespace(s, pos);
+
+    if (pos >= s.size() || s[pos] != '[')
+        throw std::runtime_error("expected '['");
+
+    ++pos;
+
+    for (;;) {
+        skip_whitespace(s, pos);
+
+        if (pos >= s.size())
+            throw std::runtime_error("unexpected end of array");
+
+        if (s[pos] == ']') {
             ++pos;
-        return piece;
-    }
+            break;
+        }
 
-    // Unquoted (numeric/bool) element -- shouldn't occur for a token
-    // array, but handled defensively rather than assuming.
-    std::size_t end = s.find_first_of(",]", pos);
-    if (end == std::string::npos)
-        end = s.size();
-    std::string piece = s.substr(pos, end - pos);
-    pos = (end < s.size() && s[end] == ',') ? end + 1 : end + 1;
-    return piece;
-}
+        result.emplace_back(parse_string(s, pos));
 
-} // namespace
+        skip_whitespace(s, pos);
 
-Tokenizer::Tokenizer(const GGUFLoader& loader) {
-    auto it = loader.metadata().find("tokenizer.ggml.tokens");
+        if (pos >= s.size())
+            throw std::runtime_error("unexpected end of array");
 
-    if (it == loader.metadata().end()) {
-        throw std::runtime_error("GGUF missing tokenizer.ggml.tokens");
-    }
+        if (s[pos] == ',') {
+            ++pos;
+            continue;
+        }
 
-    const std::string& raw = it->second;
-    if (raw.size() < 2 || raw.front() != '[' || raw.back() != ']') {
-        throw std::runtime_error("tokenizer.ggml.tokens is not in the expected array format");
-    }
+        if (s[pos] == ']') {
+            ++pos;
+            break;
+        }
 
-    std::size_t pos = 1; // skip leading '['
-    TokenId id = 0;
-
-    while (pos < raw.size() && raw[pos] != ']') {
-        std::string piece = parse_next_element(raw, pos);
-        add_token(id++, std::move(piece));
-    }
-}
-
-void Tokenizer::add_token(TokenId id, std::string piece) {
-    piece_to_id_[piece] = id;
-    id_to_piece_[id] = std::move(piece);
-}
-
-bool Tokenizer::contains(TokenId id) const {
-    return id_to_piece_.contains(id);
-}
-
-std::string Tokenizer::decode(TokenId id) const {
-    auto it = id_to_piece_.find(id);
-
-    if (it == id_to_piece_.end()) {
-        throw std::runtime_error("unknown token id");
-    }
-
-    return it->second;
-}
-
-std::string Tokenizer::decode(const std::vector<TokenId>& tokens) const {
-    std::string result;
-
-    for (auto id : tokens) {
-        result += decode(id);
+        throw std::runtime_error("expected ',' or ']'");
     }
 
     return result;
 }
 
-std::vector<TokenId> Tokenizer::encode(const std::string& text) const {
-    std::vector<TokenId> output;
+} // namespace
 
-    for (char c : text) {
-        std::string piece(1, c);
+Tokenizer::Tokenizer(const GGUFLoader& loader) {
+    load_model(loader);
+    load_vocab(loader);
+    load_special_tokens(loader);
+}
 
-        auto it = piece_to_id_.find(piece);
+void Tokenizer::load_vocab(const GGUFLoader& loader) {
+    const auto& tokens = loader.get_meta_array("tokenizer.ggml.tokens");
 
-        if (it != piece_to_id_.end()) {
-            output.push_back(it->second);
-        }
+    id_to_piece_.clear();
+    piece_to_id_.clear();
+
+    id_to_piece_.reserve(tokens.values.size());
+    piece_to_id_.reserve(tokens.values.size());
+
+    for (TokenId id = 0; id < static_cast<TokenId>(tokens.values.size()); ++id) {
+        const auto& value = tokens.values[static_cast<size_t>(id)];
+
+        if (!std::holds_alternative<std::string>(value))
+            throw std::runtime_error("token is not a string");
+
+        add_token(id, std::get<std::string>(value));
     }
+}
 
-    return output;
+void Tokenizer::load_model(const GGUFLoader& loader) {
+    try {
+        const auto& value = loader.get_meta_string("tokenizer.ggml.model");
+
+        if (value == "llama")
+            model_ = TokenizerModel::SentencePiece;
+        else if (value == "gpt2")
+            model_ = TokenizerModel::BPE;
+        else
+            model_ = TokenizerModel::Unknown;
+    } catch (const std::exception&) {
+        model_ = TokenizerModel::Unknown;
+    }
+}
+
+TokenizerModel Tokenizer::model() const noexcept {
+    return model_;
+}
+
+bool Tokenizer::contains(TokenId id) const noexcept {
+    return id >= 0 && static_cast<std::size_t>(id) < id_to_piece_.size();
 }
 
 std::size_t Tokenizer::vocab_size() const noexcept {
     return id_to_piece_.size();
+}
+
+void Tokenizer::add_token(TokenId id, std::string piece) {
+    if (static_cast<std::size_t>(id) != id_to_piece_.size())
+        throw std::runtime_error("non-contiguous token ids");
+
+    piece_to_id_.emplace(piece, id);
+    id_to_piece_.emplace_back(std::move(piece));
+}
+
+const std::string& Tokenizer::decode(TokenId id) const {
+    if (!contains(id))
+        throw std::out_of_range("invalid token id");
+
+    return id_to_piece_[static_cast<std::size_t>(id)];
+}
+
+std::vector<TokenId> Tokenizer::encode(std::string_view text) const {
+    switch (model_) {
+    case TokenizerModel::SentencePiece:
+        return encode_sentencepiece(text);
+
+    case TokenizerModel::BPE:
+        return encode_bpe(text);
+
+    case TokenizerModel::Unigram:
+        return encode_unigram(text);
+
+    default:
+        throw std::runtime_error("unsupported tokenizer model");
+    }
 }
 
 } // namespace llmengine
