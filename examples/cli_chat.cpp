@@ -52,29 +52,29 @@ int main(int argc, char** argv) {
             std::cout << "  " << key << '\n';
         }
 
-        std::cout << "\nFirst tensors:\n";
+        // std::cout << "\nFirst tensors:\n";
 
-        int count = 0;
+        // int count = 0;
 
-        for (const auto& [name, info] : loader.tensors()) {
-            std::cout << "  " << name << '\n';
+        // for (const auto& [name, info] : loader.tensors()) {
+        //     std::cout << "  " << name << '\n';
 
-            std::cout << "    shape: ";
+        //     std::cout << "    shape: ";
 
-            for (auto dim : info.shape) {
-                std::cout << dim << " ";
-            }
+        //     for (auto dim : info.shape) {
+        //         std::cout << dim << " ";
+        //     }
 
-            std::cout << '\n';
+        //     std::cout << '\n';
 
-            std::cout << "    dtype: " << static_cast<int>(info.dtype) << '\n';
+        //     std::cout << "    dtype: " << static_cast<int>(info.dtype) << '\n';
 
-            std::cout << "    offset: " << info.offset << '\n';
-            std::cout << "    nbytes: " << info.nbytes << "\n\n";
+        //     std::cout << "    offset: " << info.offset << '\n';
+        //     std::cout << "    nbytes: " << info.nbytes << "\n\n";
 
-            // if (++count == 10)
-            //     break;
-        }
+        //     if (++count == 10)
+        //         break;
+        // }
 
         std::cout << "Loading model...\n";
 
@@ -122,11 +122,15 @@ int main(int argc, char** argv) {
             }
 
             try {
-                std::cout << std::flush; // ensure "> " prompt itself wasn't buffered either
+                std::cout << std::flush;
 
-                engine.generate_text(line, gen_cfg, [](TokenId id, const std::string& piece) {
-                    std::cout << piece;
-                    std::cout.flush();
+                std::string previous;
+                engine.generate_text(line, gen_cfg, [&previous, tokenizer](TokenId id, const std::string& piece) {
+                    if (id != tokenizer.eos_token()) {
+                        std::cout << piece.substr(previous.size());
+                        std::cout.flush();
+                    }
+                    previous = piece;
                 });
 
                 std::cout << "\n\n";
