@@ -46,11 +46,11 @@ int main(int argc, char** argv) {
         std::cout << "version       : " << loader.version() << '\n';
         std::cout << "tensors       : " << loader.tensor_count() << '\n';
         std::cout << "metadata      : " << loader.metadata_count() << "\n\n";
-        std::cout << "Metadata:\n";
-
-        for (const auto& [key, value] : loader.metadata()) {
-            std::cout << "  " << key << '\n';
-        }
+        
+        // std::cout << "Metadata:\n";
+        // for (const auto& [key, value] : loader.metadata()) {
+        //     std::cout << "  " << key << '\n';
+        // }
 
         // std::cout << "\nFirst tensors:\n";
 

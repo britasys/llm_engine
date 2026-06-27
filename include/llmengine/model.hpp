@@ -50,8 +50,7 @@ public:
     ~Model();
 
     [[nodiscard]] const ModelConfig& config() const noexcept { return config_; }
-
-    // Computes the forward pass and returns a pointer to a transient logits ggml_tensor
+    
     [[nodiscard]] ggml_tensor* forward(TokenId token, int64_t pos, ggml_tensor* k_cache, ggml_tensor* v_cache) const;
 
 private:
