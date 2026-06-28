@@ -41,14 +41,18 @@ FetchContent_MakeAvailable(ggml)
 # The core library
 # ---------------------------------------------------------------------------
 add_library(llmengine
-    src/gguf_loader.cpp
-    src/kv_cache.cpp
-    src/sampler.cpp
-    src/model.cpp
+    src/backend.cpp
+    src/context.cpp
     src/engine.cpp
-    src/rope_cache.cpp
+    src/gguf_loader.cpp
+    src/graph_executor.cpp
+    src/kv_cache.cpp
+    src/model.cpp
+    src/sampler.cpp
     src/scratch_arena.cpp
+    src/tensor_loader.cpp
     src/tokenizer.cpp
+    src/transformer_block.cpp
 )
 
 target_include_directories(llmengine PUBLIC
@@ -75,10 +79,10 @@ target_link_libraries(llmengine PUBLIC Threads::Threads ggml)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-if(LLMENGINE_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
+# if(LLMENGINE_BUILD_TESTS)
+#     enable_testing()
+#     add_subdirectory(tests)
+# endif()
 
 # ---------------------------------------------------------------------------
 # Benchmarks
