@@ -121,8 +121,6 @@ std::vector<std::string> parse_string_array(std::string_view s) {
     return result;
 }
 
-// ---- UTF-8 helpers ----
-
 std::size_t utf8_decode(std::string_view s, std::size_t pos, char32_t& out) {
     unsigned char c0 = static_cast<unsigned char>(s[pos]);
 
@@ -167,8 +165,6 @@ void utf8_encode(char32_t cp, std::string& out) {
     }
 }
 
-// add to the anonymous namespace in tokenizer.cpp, near the other UTF-8 helpers
-
 bool is_ascii_letter(char32_t c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
@@ -178,8 +174,6 @@ bool is_digit_cp(char32_t c) {
 }
 
 bool is_letter_cp(char32_t c) {
-    // ASCII letters, plus treat any non-ASCII codepoint as "letter-like"
-    // (covers CJK, Cyrillic, accented Latin, etc. well enough for splitting purposes)
     return is_ascii_letter(c) || c >= 0x80;
 }
 
@@ -191,7 +185,7 @@ std::vector<std::string> pretokenize_split(std::string_view text) {
     std::vector<std::string> chunks;
 
     std::vector<char32_t> cps;
-    std::vector<std::size_t> byte_offsets; // byte offset of each codepoint
+    std::vector<std::size_t> byte_offsets;
     {
         std::size_t i = 0;
         while (i < text.size()) {
@@ -368,7 +362,6 @@ void Tokenizer::load_special_token_strings() {
             special_tokens_.emplace_back(piece, id);
         }
     }
-    // longest-match-first so e.g. "<|im_start|>" matches before any shorter overlapping token
     std::sort(special_tokens_.begin(), special_tokens_.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
 }
 
@@ -524,7 +517,7 @@ std::vector<TokenId> Tokenizer::encode(std::string_view text) const {
         output.push_back(bos_token_);
 
     std::size_t pos = 0;
-    std::string buffer; // accumulates plain text between special tokens
+    std::string buffer;
 
     auto flush_buffer = [&]() {
         if (buffer.empty())
@@ -625,7 +618,6 @@ std::vector<TokenId> Tokenizer::encode_bpe(std::string_view text) const {
         std::string chunk(text.substr(pos, end - pos));
 
         if (!chunk.empty()) {
-
             // Convert UTF-8 bytes to GPT byte unicode representation
             std::string bpe_input;
             for (unsigned char c : chunk) {

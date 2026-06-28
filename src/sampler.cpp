@@ -99,7 +99,7 @@ int32_t Sampler::sample_top_p(const float* logits, std::size_t n, float p, float
     for (; cutoff < n; ++cutoff) {
         cumulative_prob += indexed_probs[cutoff].first;
         if (cumulative_prob >= p) {
-            cutoff++; // Keep the token that pushed us over the threshold boundary
+            cutoff++;
             break;
         }
     }
