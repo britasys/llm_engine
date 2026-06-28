@@ -1,13 +1,17 @@
 #pragma once
 
+#include "llmengine/memory_mapped_file.hpp"
+
+#include <ggml.h>
+
 #include <cstdint>
 #include <filesystem>
-#include <ggml.h>
 #include <istream>
 #include <string>
 #include <unordered_map>
 #include <variant>
 #include <vector>
+#include <span>
 
 namespace llmengine {
 
@@ -44,7 +48,7 @@ public:
     [[nodiscard]] uint64_t tensor_count() const noexcept { return tensor_count_; }
     [[nodiscard]] uint64_t metadata_count() const noexcept { return metadata_count_; }
     [[nodiscard]] uint64_t tensor_data_offset() const noexcept { return tensor_data_offset_; }
-    [[nodiscard]] const std::vector<uint8_t>& file_data() const noexcept { return file_data_; }
+    [[nodiscard]] std::span<const std::byte> file_data() const noexcept { return mmap_.bytes(); }
 
     [[nodiscard]] const MetadataArray& get_meta_array(std::string_view key) const;
     [[nodiscard]] std::string get_meta_string(std::string_view key) const;
@@ -75,7 +79,7 @@ private:
 
     TensorMap tensors_;
     MetaMap metadata_;
-    std::vector<uint8_t> file_data_;
+    MemoryMappedFile mmap_;
 };
 
 } // namespace llmengine

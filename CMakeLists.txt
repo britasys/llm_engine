@@ -54,6 +54,8 @@ add_library(llmengine
     src/tensor_loader.cpp
     src/tokenizer.cpp
     src/transformer_block.cpp
+    src/platform/memory_mapped_file_win.cpp
+    src/platform/memory_mapped_file_posix.cpp
 )
 
 target_include_directories(llmengine PUBLIC

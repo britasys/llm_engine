@@ -1,4 +1,5 @@
 #include "llmengine/gguf_loader.hpp"
+
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -36,7 +37,7 @@ void GGUFLoader::ensure_remaining(std::istream& in, uint64_t n) {
     if (cur < 0)
         throw std::runtime_error("invalid stream position");
     uint64_t pos = static_cast<uint64_t>(cur);
-    if (pos > file_data_.size() || n > file_data_.size() - pos)
+    if (pos > mmap_.size() || n > mmap_.size() - pos)
         throw std::runtime_error("unexpected end of gguf file");
 }
 
@@ -89,30 +90,14 @@ ggml_type GGUFLoader::gguf_type_to_ggml(uint32_t t) {
 GGUFLoader::GGUFLoader(const std::filesystem::path& path) : path_(path) {}
 
 void GGUFLoader::load() {
-    std::ifstream f;
-    f.open(path_, std::ios::binary | std::ios::in | std::ios::ate);
-    if (!f)
+    mmap_.open(path_, MemoryMappedFile::Mode::ReadOnly);
+    if (!mmap_.is_open())
         throw std::runtime_error("failed to open gguf file: " + path_.string());
-
-    auto tell = f.tellg();
-    if (tell < 0)
-        throw std::runtime_error("failed to determine gguf file size: " + path_.string());
-    size_t size = static_cast<size_t>(tell);
-    f.seekg(0, std::ios::beg);
-    if (!f)
-        throw std::runtime_error("failed to seek gguf file: " + path_.string());
-
-    if (size < 24)
+    if (mmap_.size() < 24)
         throw std::runtime_error("gguf file too small: " + path_.string());
 
-    file_data_.resize(size);
-    f.read(reinterpret_cast<char*>(file_data_.data()), static_cast<std::streamsize>(size));
-    if (!f)
-        throw std::runtime_error("failed to read gguf file: " + path_.string());
-    f.close();
-
     struct VectorBuffer : std::streambuf {
-        VectorBuffer(uint8_t* base, size_t size) {
+        VectorBuffer(std::byte* base, size_t size) {
             char* p = reinterpret_cast<char*>(base);
             setg(p, p, p + size);
         }
@@ -149,7 +134,7 @@ void GGUFLoader::load() {
 
         pos_type seekpos(pos_type pos, std::ios_base::openmode which) override { return seekoff(off_type(pos), std::ios_base::beg, which); }
     };
-    VectorBuffer buf(file_data_.data(), file_data_.size());
+    VectorBuffer buf(mmap_.data(), static_cast<size_t>(mmap_.size()));
     std::istream stream(&buf);
 
     if (read<uint32_t>(stream) != GGUF_MAGIC)
@@ -353,14 +338,14 @@ void GGUFLoader::load() {
         throw std::runtime_error("tensor data offset overflow");
     tensor_data_offset_ = padded & ~(alignment - 1);
 
-    if (tensor_data_offset_ > file_data_.size())
+    if (tensor_data_offset_ > mmap_.size())
         throw std::runtime_error("tensor data offset exceeds file size");
 
     for (const auto& [name, info] : tensors_) {
         uint64_t end;
         if (add_overflow(tensor_data_offset_, info.offset, end) || add_overflow(end, info.nbytes, end))
             throw std::runtime_error("tensor data range overflow: " + name);
-        if (end > file_data_.size())
+        if (end > mmap_.size())
             throw std::runtime_error("tensor data out of bounds: " + name);
     }
 }
@@ -376,9 +361,9 @@ const GGUFTensorInfo& GGUFLoader::tensor_info(const std::string& name) const {
 const void* GGUFLoader::tensor_data(const std::string& name) const {
     const auto& t = tensors_.at(name);
     uint64_t start;
-    if (add_overflow(tensor_data_offset_, t.offset, start) || start > file_data_.size() || t.nbytes > file_data_.size() - start)
+    if (add_overflow(tensor_data_offset_, t.offset, start) || start > mmap_.size() || t.nbytes > mmap_.size() - start)
         throw std::runtime_error("tensor data out of bounds: " + name);
-    return file_data_.data() + start;
+    return mmap_.data() + start;
 }
 
 const MetadataArray& GGUFLoader::get_meta_array(std::string_view key) const {
