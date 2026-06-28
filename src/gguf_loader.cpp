@@ -66,19 +66,18 @@ ggml_type GGUFLoader::gguf_type_to_ggml(uint32_t t) {
     }
 }
 
-GGUFLoader::GGUFLoader(const std::filesystem::path& path) : path_(path) {}
+GGUFLoader::GGUFLoader(const std::filesystem::path& path) : source_(std::make_shared<MMapByteSource>(path)) {}
+GGUFLoader::GGUFLoader(std::shared_ptr<ByteSource> source) : source_(source) {}
 
 void GGUFLoader::load() {
-    mmap_.open(path_, MemoryMappedFile::Mode::ReadOnly);
-    if (!mmap_.is_open())
-        throw std::runtime_error("failed to open gguf file: " + path_.string());
-    if (mmap_.size() < 24)
-        throw std::runtime_error("gguf file too small: " + path_.string());
+    auto bytes = source_->bytes();
+    if (bytes.size() < 24)
+        throw std::runtime_error("gguf file too small");
 
-    BinaryReader reader(mmap_.bytes());
+    BinaryReader reader(bytes);
     if (reader.read<uint32_t>() != GGUF_MAGIC)
         throw std::runtime_error("invalid magic");
-        
+
     version_ = reader.read<uint32_t>();
     tensor_count_ = reader.read<uint64_t>();
     metadata_count_ = reader.read<uint64_t>();
@@ -275,14 +274,14 @@ void GGUFLoader::load() {
         throw std::runtime_error("tensor data offset overflow");
     tensor_data_offset_ = padded & ~(alignment - 1);
 
-    if (tensor_data_offset_ > mmap_.size())
+    if (tensor_data_offset_ > bytes.size())
         throw std::runtime_error("tensor data offset exceeds file size");
 
     for (const auto& [name, info] : tensors_) {
         uint64_t end;
         if (add_overflow(tensor_data_offset_, info.offset, end) || add_overflow(end, info.nbytes, end))
             throw std::runtime_error("tensor data range overflow: " + name);
-        if (end > mmap_.size())
+        if (end > bytes.size())
             throw std::runtime_error("tensor data out of bounds: " + name);
     }
 }
@@ -298,9 +297,10 @@ const GGUFTensorInfo& GGUFLoader::tensor_info(const std::string& name) const {
 const void* GGUFLoader::tensor_data(const std::string& name) const {
     const auto& t = tensors_.at(name);
     uint64_t start;
-    if (add_overflow(tensor_data_offset_, t.offset, start) || start > mmap_.size() || t.nbytes > mmap_.size() - start)
+    auto bytes = source_->bytes();
+    if (add_overflow(tensor_data_offset_, t.offset, start) || start > bytes.size() || t.nbytes > bytes.size() - start)
         throw std::runtime_error("tensor data out of bounds: " + name);
-    return mmap_.data() + start;
+    return bytes.data() + start;
 }
 
 const MetadataArray& GGUFLoader::get_meta_array(std::string_view key) const {
