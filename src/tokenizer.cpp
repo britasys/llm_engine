@@ -187,9 +187,6 @@ bool is_space_cp(char32_t c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == 0x0B || c == 0x0C;
 }
 
-// Splits text into GPT2/Qwen2-style pretokenizer chunks (on raw UTF-8 text,
-// BEFORE byte-level remapping). Each returned chunk is later byte-remapped
-// and BPE-merged independently.
 std::vector<std::string> pretokenize_split(std::string_view text) {
     std::vector<std::string> chunks;
 
