@@ -80,10 +80,10 @@ target_link_libraries(llmengine PUBLIC Threads::Threads ggml)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# if(LLMENGINE_BUILD_TESTS)
-#     enable_testing()
-#     add_subdirectory(tests)
-# endif()
+if(LLMENGINE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ---------------------------------------------------------------------------
 # Benchmarks
