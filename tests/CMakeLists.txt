@@ -9,6 +9,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(llmengine_tests
+    test_backend.cpp
     test_scratch_arena.cpp
     test_kv_cache.cpp
 )
