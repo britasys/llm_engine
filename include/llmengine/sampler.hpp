@@ -1,3 +1,4 @@
+// sampler.hpp
 #pragma once
 
 #include <cstdint>

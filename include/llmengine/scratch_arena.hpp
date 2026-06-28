@@ -1,3 +1,4 @@
+// scratch_arena.hpp
 #pragma once
 
 #include <cstddef>
