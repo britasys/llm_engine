@@ -6,7 +6,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <istream>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -56,19 +55,7 @@ public:
     [[nodiscard]] float get_meta_float(std::string_view key) const;
 
 private:
-    template<typename T> T read(std::istream& in) {
-        ensure_remaining(in, sizeof(T));
-        T value{};
-        in.read(reinterpret_cast<char*>(&value), sizeof(T));
-        if (!in)
-            throw std::runtime_error("failed to read from gguf file");
-        return value;
-    }
-
-    std::string read_string(std::istream& in);
     static ggml_type gguf_type_to_ggml(uint32_t t);
-
-    void ensure_remaining(std::istream& in, uint64_t n);
 
 private:
     std::filesystem::path path_;

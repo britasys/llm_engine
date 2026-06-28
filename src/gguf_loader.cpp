@@ -1,4 +1,5 @@
 #include "llmengine/gguf_loader.hpp"
+#include "llmengine/binary_reader.hpp"
 
 #include <cstring>
 #include <fstream>
@@ -31,28 +32,6 @@ bool add_overflow(uint64_t a, uint64_t b, uint64_t& out) {
 }
 
 } // namespace
-
-void GGUFLoader::ensure_remaining(std::istream& in, uint64_t n) {
-    auto cur = in.tellg();
-    if (cur < 0)
-        throw std::runtime_error("invalid stream position");
-    uint64_t pos = static_cast<uint64_t>(cur);
-    if (pos > mmap_.size() || n > mmap_.size() - pos)
-        throw std::runtime_error("unexpected end of gguf file");
-}
-
-std::string GGUFLoader::read_string(std::istream& in) {
-    uint64_t len = read<uint64_t>(in);
-    if (len > MAX_STRING_LEN)
-        throw std::runtime_error("gguf string length exceeds limit");
-    ensure_remaining(in, len);
-    std::string s(len, '\0');
-    if (len > 0)
-        in.read(s.data(), static_cast<std::streamsize>(len));
-    if (!in)
-        throw std::runtime_error("failed to read string from gguf file");
-    return s;
-}
 
 ggml_type GGUFLoader::gguf_type_to_ggml(uint32_t t) {
     switch (t) {
@@ -96,52 +75,13 @@ void GGUFLoader::load() {
     if (mmap_.size() < 24)
         throw std::runtime_error("gguf file too small: " + path_.string());
 
-    struct VectorBuffer : std::streambuf {
-        VectorBuffer(std::byte* base, size_t size) {
-            char* p = reinterpret_cast<char*>(base);
-            setg(p, p, p + size);
-        }
-
-        pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override {
-            if (!(which & std::ios_base::in))
-                return pos_type(off_type(-1));
-
-            char* base = eback();
-            char* cur = gptr();
-            char* end = egptr();
-            off_type new_off;
-
-            switch (dir) {
-            case std::ios_base::beg:
-                new_off = off;
-                break;
-            case std::ios_base::cur:
-                new_off = (cur - base) + off;
-                break;
-            case std::ios_base::end:
-                new_off = (end - base) + off;
-                break;
-            default:
-                return pos_type(off_type(-1));
-            }
-
-            if (new_off < 0 || new_off > (end - base))
-                return pos_type(off_type(-1));
-
-            setg(base, base + new_off, end);
-            return pos_type(new_off);
-        }
-
-        pos_type seekpos(pos_type pos, std::ios_base::openmode which) override { return seekoff(off_type(pos), std::ios_base::beg, which); }
-    };
-    VectorBuffer buf(mmap_.data(), static_cast<size_t>(mmap_.size()));
-    std::istream stream(&buf);
-
-    if (read<uint32_t>(stream) != GGUF_MAGIC)
+    BinaryReader reader(mmap_.bytes());
+    if (reader.read<uint32_t>() != GGUF_MAGIC)
         throw std::runtime_error("invalid magic");
-    version_ = read<uint32_t>(stream);
-    tensor_count_ = read<uint64_t>(stream);
-    metadata_count_ = read<uint64_t>(stream);
+        
+    version_ = reader.read<uint32_t>();
+    tensor_count_ = reader.read<uint64_t>();
+    metadata_count_ = reader.read<uint64_t>();
 
     if (tensor_count_ > MAX_TENSOR_COUNT)
         throw std::runtime_error("gguf tensor count exceeds limit");
@@ -149,49 +89,49 @@ void GGUFLoader::load() {
         throw std::runtime_error("gguf metadata count exceeds limit");
 
     for (uint64_t i = 0; i < metadata_count_; i++) {
-        std::string key = read_string(stream);
-        uint32_t type = read<uint32_t>(stream);
+        std::string key = reader.read_string();
+        uint32_t type = reader.read<uint32_t>();
 
         switch (type) {
         case 0:
-            metadata_[key] = static_cast<uint64_t>(read<uint8_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(reader.read<uint8_t>());
             break;
 
         case 1:
-            metadata_[key] = static_cast<int64_t>(read<int8_t>(stream));
+            metadata_[key] = static_cast<int64_t>(reader.read<int8_t>());
             break;
 
         case 2:
-            metadata_[key] = static_cast<uint64_t>(read<uint16_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(reader.read<uint16_t>());
             break;
 
         case 3:
-            metadata_[key] = static_cast<int64_t>(read<int16_t>(stream));
+            metadata_[key] = static_cast<int64_t>(reader.read<int16_t>());
             break;
 
         case 4:
-            metadata_[key] = static_cast<uint64_t>(read<uint32_t>(stream));
+            metadata_[key] = static_cast<uint64_t>(reader.read<uint32_t>());
             break;
 
         case 5:
-            metadata_[key] = static_cast<int64_t>(read<int32_t>(stream));
+            metadata_[key] = static_cast<int64_t>(reader.read<int32_t>());
             break;
 
         case 6:
-            metadata_[key] = read<float>(stream);
+            metadata_[key] = reader.read<float>();
             break;
 
         case 7:
-            metadata_[key] = read<uint8_t>(stream) != 0;
+            metadata_[key] = reader.read<uint8_t>() != 0;
             break;
 
         case 8:
-            metadata_[key] = read_string(stream);
+            metadata_[key] = reader.read_string();
             break;
 
         case 9: {
-            uint32_t array_type = read<uint32_t>(stream);
-            uint64_t len = read<uint64_t>(stream);
+            uint32_t array_type = reader.read<uint32_t>();
+            uint64_t len = reader.read<uint64_t>();
 
             if (len > MAX_ARRAY_LEN)
                 throw std::runtime_error("gguf array too large");
@@ -205,39 +145,39 @@ void GGUFLoader::load() {
                 switch (array_type) {
 
                 case 0:
-                    arr->values.push_back(static_cast<uint64_t>(read<uint8_t>(stream)));
+                    arr->values.push_back(static_cast<uint64_t>(reader.read<uint8_t>()));
                     break;
 
                 case 1:
-                    arr->values.push_back(static_cast<int64_t>(read<int8_t>(stream)));
+                    arr->values.push_back(static_cast<int64_t>(reader.read<int8_t>()));
                     break;
 
                 case 2:
-                    arr->values.push_back(static_cast<uint64_t>(read<uint16_t>(stream)));
+                    arr->values.push_back(static_cast<uint64_t>(reader.read<uint16_t>()));
                     break;
 
                 case 3:
-                    arr->values.push_back(static_cast<int64_t>(read<int16_t>(stream)));
+                    arr->values.push_back(static_cast<int64_t>(reader.read<int16_t>()));
                     break;
 
                 case 4:
-                    arr->values.push_back(static_cast<uint64_t>(read<uint32_t>(stream)));
+                    arr->values.push_back(static_cast<uint64_t>(reader.read<uint32_t>()));
                     break;
 
                 case 5:
-                    arr->values.push_back(static_cast<int64_t>(read<int32_t>(stream)));
+                    arr->values.push_back(static_cast<int64_t>(reader.read<int32_t>()));
                     break;
 
                 case 6:
-                    arr->values.push_back(read<float>(stream));
+                    arr->values.push_back(reader.read<float>());
                     break;
 
                 case 7:
-                    arr->values.push_back(read<uint8_t>(stream) != 0);
+                    arr->values.push_back(reader.read<uint8_t>() != 0);
                     break;
 
                 case 8:
-                    arr->values.push_back(read_string(stream));
+                    arr->values.push_back(reader.read_string());
                     break;
 
                 default:
@@ -250,15 +190,15 @@ void GGUFLoader::load() {
         }
 
         case 10:
-            metadata_[key] = read<uint64_t>(stream);
+            metadata_[key] = reader.read<uint64_t>();
             break;
 
         case 11:
-            metadata_[key] = read<int64_t>(stream);
+            metadata_[key] = reader.read<int64_t>();
             break;
 
         case 12:
-            metadata_[key] = static_cast<float>(read<double>(stream));
+            metadata_[key] = static_cast<float>(reader.read<double>());
             break;
 
         default:
@@ -268,18 +208,18 @@ void GGUFLoader::load() {
 
     for (uint64_t i = 0; i < tensor_count_; i++) {
         GGUFTensorInfo info;
-        info.name = read_string(stream);
+        info.name = reader.read_string();
         if (tensors_.find(info.name) != tensors_.end())
             throw std::runtime_error("duplicate tensor name in gguf file: " + info.name);
 
-        uint32_t ndim = read<uint32_t>(stream);
+        uint32_t ndim = reader.read<uint32_t>();
         if (ndim > MAX_TENSOR_DIMS)
             throw std::runtime_error("tensor has too many dimensions: " + info.name);
 
         info.shape.resize(ndim);
         uint64_t element_count = 1;
         for (uint32_t d = 0; d < ndim; d++) {
-            uint64_t dim = read<uint64_t>(stream);
+            uint64_t dim = reader.read<uint64_t>();
             if (dim > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
                 throw std::runtime_error("tensor dimension out of range: " + info.name);
             info.shape[d] = static_cast<int64_t>(dim);
@@ -289,9 +229,9 @@ void GGUFLoader::load() {
             element_count = next;
         }
 
-        uint32_t type = read<uint32_t>(stream);
+        uint32_t type = reader.read<uint32_t>();
         info.dtype = gguf_type_to_ggml(type);
-        info.offset = read<uint64_t>(stream);
+        info.offset = reader.read<uint64_t>();
 
         int64_t blck_size = ggml_blck_size(info.dtype);
         size_t type_size = ggml_type_size(info.dtype);
@@ -328,10 +268,7 @@ void GGUFLoader::load() {
         alignment = parsed;
     }
 
-    auto cur = stream.tellg();
-    if (cur < 0)
-        throw std::runtime_error("invalid stream position computing tensor data offset");
-    uint64_t header_end = static_cast<uint64_t>(cur);
+    const uint64_t header_end = static_cast<uint64_t>(reader.position());
 
     uint64_t padded;
     if (add_overflow(header_end, alignment - 1, padded))
