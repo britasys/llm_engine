@@ -13,6 +13,7 @@ add_executable(llmengine_tests
     test_scratch_arena.cpp
     test_kv_cache.cpp
     test_sampler.cpp
+    test_gguf_loader.cpp
 )
 
 target_link_libraries(llmengine_tests PRIVATE llmengine GTest::gtest_main GTest::gmock)
