@@ -28,9 +28,7 @@ void Engine::generate_text(const std::string& prompt, const GenerationConfig& co
     std::string formatted_prompt = "<|im_start|>user\n" + prompt +
                                    "<|im_end|>\n"
                                    "<|im_start|>assistant\n";
-
     auto prompt_tokens = tokenizer_.encode(formatted_prompt);
-
     if (prompt_tokens.empty())
         return;
 
@@ -52,7 +50,6 @@ void Engine::generate_text(const std::string& prompt, const GenerationConfig& co
     generated.reserve(config.max_new_tokens);
 
     TokenId next_token = pick_next_token(logits, config);
-
     generated.push_back(next_token);
 
     if (callback) {
@@ -65,7 +62,6 @@ void Engine::generate_text(const std::string& prompt, const GenerationConfig& co
     // Decode loop
     //
     while (kv_cache_.size() < kv_cache_.capacity() - 1 && tokens_produced < config.max_new_tokens) {
-
         int64_t pos = kv_cache_.size();
 
         logits = model_.forward(next_token, pos, kv_cache_.k_cache(), kv_cache_.v_cache());
@@ -73,18 +69,17 @@ void Engine::generate_text(const std::string& prompt, const GenerationConfig& co
         kv_cache_.increment_sequence();
 
         next_token = pick_next_token(logits, config);
-
         generated.push_back(next_token);
 
         tokens_produced++;
 
         if (callback) {
-
             callback(next_token, tokenizer_.decode(std::span<const TokenId>(generated.data(), generated.size())));
         }
 
-        if (next_token == tokenizer_.eos_token())
+        if (next_token == tokenizer_.eos_token()) {
             break;
+        }
     }
 }
 

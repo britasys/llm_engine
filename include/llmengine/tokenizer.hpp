@@ -1,6 +1,8 @@
 // llmengine/tokenizer.hpp
 #pragma once
 
+#include "model_config.hpp"
+
 #include <array>
 #include <cstdint>
 #include <span>
@@ -13,8 +15,6 @@
 namespace llmengine {
 
 class GGUFLoader;
-
-using TokenId = int32_t;
 
 enum class TokenizerModel { Unknown, SentencePiece, BPE, Unigram };
 

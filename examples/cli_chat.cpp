@@ -4,6 +4,7 @@
 
 #include "llmengine/engine.hpp"
 #include "llmengine/gguf_loader.hpp"
+#include "llmengine/model_loader.hpp"
 #include "llmengine/tokenizer.hpp"
 
 using namespace llmengine;
@@ -29,7 +30,7 @@ int main(int argc, char** argv) {
         std::cout << "Loading model...\n";
 
         Tokenizer tokenizer(loader);
-        Model model(loader);
+        Model model = ModelLoader::load(loader);
         Engine engine(model, tokenizer);
 
         const auto& cfg = model.config();

@@ -15,6 +15,9 @@ public:
     ScratchArena(const ScratchArena&) = delete;
     ScratchArena& operator=(const ScratchArena&) = delete;
 
+    ScratchArena(ScratchArena&&) noexcept = default;
+    ScratchArena& operator=(ScratchArena&&) noexcept = default;
+
     [[nodiscard]] ggml_context* ctx() const noexcept { return ctx_.get(); }
 
     void reset() noexcept;

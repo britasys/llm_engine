@@ -47,6 +47,7 @@ add_library(llmengine
     src/gguf_loader.cpp
     src/graph_executor.cpp
     src/kv_cache.cpp
+    src/model_loader.cpp
     src/model.cpp
     src/sampler.cpp
     src/scratch_arena.cpp
