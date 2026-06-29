@@ -14,6 +14,8 @@ add_executable(llmengine_tests
     test_kv_cache.cpp
     test_sampler.cpp
     test_gguf_loader.cpp
+    test_model.cpp
+    test_tokenizer.cpp
 )
 
 target_link_libraries(llmengine_tests PRIVATE llmengine GTest::gtest_main GTest::gmock)
