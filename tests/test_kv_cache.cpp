@@ -152,9 +152,14 @@ TEST_F(KVCacheTest, ReachingMaximumSequence) {
 TEST_F(KVCacheTest, CannotOverflowSequence) {
     KVCache cache(5, LAYERS, HEADS, DIM);
 
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i < 5; ++i)
         cache.increment_sequence();
 
+    EXPECT_EQ(cache.size(), 5);
+
+    EXPECT_THROW(cache.increment_sequence(), std::out_of_range);
+
+    // Size should remain unchanged after the failed increment.
     EXPECT_EQ(cache.size(), 5);
 }
 
@@ -235,22 +240,28 @@ TEST_F(KVCacheTest, DifferentConfigurationsWork) {
     }
 }
 
+TEST_F(KVCacheTest, IncrementSequenceThrowsWhenFull) {
+    KVCache cache(2, 1, 1, 1);
+
+    cache.increment_sequence(); // size = 1
+    cache.increment_sequence(); // size = 2 (full)
+
+    EXPECT_THROW(cache.increment_sequence(), std::out_of_range);
+
+    EXPECT_EQ(cache.size(), 2);
+}
+
 //
 // Compile-time API checks
 //
 
 TEST_F(KVCacheTest, TypeTraits) {
     static_assert(!std::is_copy_constructible_v<KVCache>);
-
     static_assert(!std::is_copy_assignable_v<KVCache>);
-
     static_assert(!std::is_move_constructible_v<KVCache>);
-
     static_assert(!std::is_move_assignable_v<KVCache>);
 
     static_assert(noexcept(std::declval<KVCache&>().clear()));
-
-    static_assert(noexcept(std::declval<KVCache&>().increment_sequence()));
 
     SUCCEED();
 }

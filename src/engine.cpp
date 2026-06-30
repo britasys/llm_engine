@@ -6,7 +6,7 @@ namespace llmengine {
 
 Engine::Engine(Model& model, Tokenizer& tokenizer)
     : model_(model), tokenizer_(tokenizer),
-      kv_cache_(model.config().max_seq_len, model.config().n_layers, model.config().n_kv_heads, model.config().head_dim()) {}
+      kv_cache_(model.config().max_seq_len, model.config().n_layers, model.config().n_kv_heads, model.config().head_dim(), GGML_TYPE_F32) {}
 
 TokenId Engine::pick_next_token(ggml_tensor* logits, const GenerationConfig& config) {
     const float* data = static_cast<const float*>(logits->data);
