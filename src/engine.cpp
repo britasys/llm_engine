@@ -24,11 +24,27 @@ TokenId Engine::pick_next_token(ggml_tensor* logits, const GenerationConfig& con
     return sampler_.sample(data, vocab_size, config.temperature);
 }
 
-void Engine::generate_text(const std::string& prompt, const GenerationConfig& config, const TextPieceCallback& callback) {
+ggml_tensor* Engine::forward(TokenId token) {
+    auto pos = kv_cache_.size();
 
-    std::string formatted_prompt = "<|im_start|>user\n" + prompt +
-                                   "<|im_end|>\n"
-                                   "<|im_start|>assistant\n";
+    auto* logits = model_.forward(token, pos, kv_cache_.k_cache(), kv_cache_.v_cache());
+
+    kv_cache_.increment_sequence();
+
+    return logits;
+}
+
+void Engine::generate_text(const std::string& prompt, const GenerationConfig& config, const TextPieceCallback& callback) {
+    kv_cache_.clear();
+
+    std::string formatted_prompt;
+    formatted_prompt.reserve(prompt.size() + 64);
+
+    formatted_prompt += "<|im_start|>user\n";
+    formatted_prompt += prompt;
+    formatted_prompt += "<|im_end|>\n";
+    formatted_prompt += "<|im_start|>assistant\n";
+
     auto prompt_tokens = tokenizer_.encode(formatted_prompt);
     if (prompt_tokens.empty())
         return;
@@ -39,48 +55,47 @@ void Engine::generate_text(const std::string& prompt, const GenerationConfig& co
     // Prefill
     //
     for (size_t i = 0; i < prompt_tokens.size(); ++i) {
-        int64_t pos = kv_cache_.size();
-        logits = model_.forward(prompt_tokens[i], pos, kv_cache_.k_cache(), kv_cache_.v_cache());
-        kv_cache_.increment_sequence();
+        logits = forward(prompt_tokens[i]);
     }
 
     //
     // First generated token
     //
+    auto eos_token = tokenizer_.eos_token();
+    auto kv_cache_capacity = kv_cache_.capacity();
+
     std::vector<TokenId> generated;
     generated.reserve(config.max_new_tokens);
 
+    auto emit = [&](TokenId token) {
+        if (callback) {
+            callback(token, tokenizer_.decode(std::span(generated)));
+        }
+    };
+
     TokenId next_token = pick_next_token(logits, config);
+    if (next_token == eos_token)
+        return;
+
     generated.push_back(next_token);
+    emit(next_token);
 
-    if (callback) {
-        callback(next_token, tokenizer_.decode(std::span<const TokenId>(generated.data(), generated.size())));
-    }
-
-    int32_t tokens_produced = 1;
+    int64_t tokens_produced = 1;
 
     //
     // Decode loop
     //
-    while (kv_cache_.size() < kv_cache_.capacity() - 1 && tokens_produced < config.max_new_tokens) {
-        int64_t pos = kv_cache_.size();
-
-        logits = model_.forward(next_token, pos, kv_cache_.k_cache(), kv_cache_.v_cache());
-
-        kv_cache_.increment_sequence();
+    while (kv_cache_.size() < kv_cache_capacity - 1 && tokens_produced < config.max_new_tokens) {
+        logits = forward(next_token);
 
         next_token = pick_next_token(logits, config);
+        if (next_token == eos_token)
+            break;
+
         generated.push_back(next_token);
+        emit(next_token);
 
         tokens_produced++;
-
-        if (callback) {
-            callback(next_token, tokenizer_.decode(std::span<const TokenId>(generated.data(), generated.size())));
-        }
-
-        if (next_token == tokenizer_.eos_token()) {
-            break;
-        }
     }
 }
 
